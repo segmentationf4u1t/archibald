@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Discord: przywraca bibliotekę openh264, której oczekuje zainstalowany host Discorda.
+#
+# Host (app-*/resources/app.asar) podaje Chromium na sztywno
+#   --openh264-library-path=<discord_asset_cache>/openh264/libopenh264-<wersja>.so
+# a klient webowy pobiera inną wersję i przy każdym starcie kasuje z tego katalogu resztę plików.
+# Bez tej biblioteki Discord nie dekoduje H.264, więc GIF-y (to filmy MP4) i filmy H.264 nie grają.
+# Uruchamiane przez discord-openh264.path przy każdej zmianie katalogu. Kopie bibliotek (oficjalne
+# binarki Cisco z ciscobinary.openh264.org, MD5 zgodne z *.signed.md5.txt) leżą w $stash.
+# Gdy host zacznie oczekiwać wersji, którą klient sam trzyma, skrypt nic nie robi.
+set -euo pipefail
+
+conf="${XDG_CONFIG_HOME:-$HOME/.config}/discord"
+cache="$conf/discord_asset_cache/openh264"
+stash="${XDG_DATA_HOME:-$HOME/.local/share}/discord-openh264"
+
+host=$(readlink -f "$conf/Discord") || exit 0
+read -r want < <(grep -aoE -m1 'libopenh264-[0-9.]+-linux64\.[0-9]+\.so' "${host%/*}/resources/app.asar") || exit 0
+
+[[ -e $cache/$want ]] && exit 0
+if [[ ! -f $stash/$want ]]; then
+  echo "host oczekuje $want, a w $stash nie ma kopii" >&2
+  exit 0
+fi
+
+# nazwa tymczasowa zaczyna się od kropki: sprzątanie Discorda pomija takie pliki
+mkdir -p "$cache"
+cp "$stash/$want" "$cache/.$want.tmp"
+mv -f "$cache/.$want.tmp" "$cache/$want"
+echo "przywrócono $want"

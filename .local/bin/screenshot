@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Zrzuty ekranu (Print / Shift+Print w hyprland.lua).
+#   screenshot area – zamraża ekran razem z otwartymi panelami Quickshella, obszar ze slurpa → schowek
+#   screenshot full – cały pulpit → ~/Pictures/Screenshots/<data>.png + schowek
+set -euo pipefail
+
+case ${1:-area} in
+  area)
+    pgrep -x slurp >/dev/null && exit 0
+    dir=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/screenshot.XXXXXX")
+    trap 'qs ipc call screenshot thaw >/dev/null 2>&1; rm -rf "$dir"' EXIT
+
+    # Każde wyjście tak, jak wygląda teraz: slurp zabiera fokus, a to zamyka otwarty panel.
+    for output in $(hyprctl monitors | sed -n 's/^Monitor \([^ ]*\) .*/\1/p'); do
+      grim -t ppm -o "$output" "$dir/$output.ppm" &
+    done
+    wait
+    qs ipc call screenshot freeze "$dir" >/dev/null
+    sleep 0.1                          # zamrożone klatki muszą być pod nakładką slurpa, nie nad nią
+    qs ipc call bar close >/dev/null   # zwalnia focus grab panelu, inaczej pierwsze kliknięcie slurpa przepada
+
+    geom=$(slurp) || exit 0
+    grim -g "$geom" - | wl-copy --type image/png
+    notify-send -a Screenshot "Zrzut obszaru skopiowany do schowka"
+    ;;
+  full)
+    mkdir -p "$HOME/Pictures/Screenshots"
+    f="$HOME/Pictures/Screenshots/$(date +%Y-%m-%d_%H-%M-%S).png"
+    grim "$f"
+    wl-copy --type image/png < "$f"
+    notify-send -a Screenshot "Zrzut ekranu zapisany" "$f"
+    ;;
+  *)
+    echo "użycie: screenshot [area|full]" >&2
+    exit 2
+    ;;
+esac

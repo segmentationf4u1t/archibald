@@ -1,0 +1,3 @@
+<input type='evdev'>
+  <source dev='/dev/input/by-id/usb-ROCCAT_ROCCAT_Vulcan_II_Mini-event-kbd' grab='all' grabToggle='ctrl-ctrl' repeat='on'/>
+</input>

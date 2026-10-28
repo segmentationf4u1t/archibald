@@ -1,0 +1,106 @@
+/* Rosé Pine (main) */
+* {
+    base:        #191724;
+    surface:     #1f1d2e;
+    overlay:     #26233a;
+    muted:       #6e6a86;
+    subtle:      #908caa;
+    text:        #e0def4;
+    love:        #eb6f92;
+    gold:        #f6c177;
+    rose:        #ebbcba;
+    pine:        #31748f;
+    foam:        #9ccfd8;
+    iris:        #c4a7e7;
+    hl-low:      #21202e;
+    hl-med:      #403d52;
+    hl-high:     #524f67;
+
+    background-color: transparent;
+    text-color:       @text;
+    spacing:          0;
+}
+
+window {
+    location:         center;
+    anchor:           center;
+    width:            600px;
+    background-color: #191724e6;
+    border:           2px;
+    border-color:     @iris;
+    border-radius:    16px;
+}
+
+mainbox {
+    padding:  16px;
+    spacing:  12px;
+    children: [ inputbar, listview ];
+}
+
+inputbar {
+    padding:          10px 14px;
+    spacing:          12px;
+    background-color: @overlay;
+    border:           1px;
+    border-color:     @hl-med;
+    border-radius:    12px;
+    children:         [ textbox-icon, entry ];
+}
+
+textbox-icon {
+    expand:     false;
+    str:        "󰍉";
+    text-color: @iris;
+    vertical-align: 0.5;
+}
+
+entry {
+    placeholder:       "Szukaj...";
+    placeholder-color: @muted;
+    cursor-color:      @rose;
+    vertical-align:    0.5;
+}
+
+prompt { enabled: false; }
+
+listview {
+    lines:        8;
+    columns:      1;
+    fixed-height: true;
+    scrollbar:    false;
+    spacing:      4px;
+    cycle:        true;
+}
+
+element {
+    padding:       8px 12px;
+    spacing:       14px;
+    border-radius: 10px;
+    orientation:   horizontal;
+}
+
+element normal.normal, element alternate.normal { background-color: transparent; text-color: @text; }
+
+element selected.normal {
+    background-color: #c4a7e740;
+    text-color:       @rose;
+}
+
+element-icon {
+    size:           28px;
+    vertical-align: 0.5;
+}
+
+element-text {
+    background-color: transparent;
+    text-color:       inherit;
+    vertical-align:   0.5;
+}
+
+message {
+    padding:          10px 14px;
+    background-color: @overlay;
+    border-radius:    12px;
+}
+
+textbox { text-color: @text; }

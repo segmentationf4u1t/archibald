@@ -1,0 +1,6 @@
+[Unit]
+Description=Restore the openh264 library Discord's host expects (see ~/.local/bin/discord-openh264)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/discord-openh264

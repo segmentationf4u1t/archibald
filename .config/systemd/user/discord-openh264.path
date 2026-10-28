@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch Discord's openh264 cache and restore the library its host expects
+
+[Path]
+PathChanged=%h/.config/discord/discord_asset_cache/openh264
+Unit=discord-openh264.service
+
+[Install]
+WantedBy=default.target

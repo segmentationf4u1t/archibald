@@ -1,0 +1,46 @@
+# Dotfiles repository whitelist (bare repo ~/.dotfiles, work tree $HOME; used by ~/.local/bin/dotfiles).
+# Everything in $HOME is ignored except the paths re-included below, so `dotfiles status` lists new
+# files only inside these paths. To version something else, add a `!/path` line here.
+/*
+
+!/.bashrc
+!/.bash_profile
+
+!/.config/
+/.config/*
+!/.config/dotfiles/
+!/.config/hypr/
+!/.config/quickshell/
+!/.config/rofi/
+!/.config/dunst/
+!/.config/wofi/
+!/.config/kitty/
+!/.config/gtk-3.0/
+!/.config/gtk-4.0/
+!/.config/fontconfig/
+!/.config/looking-glass/
+/.config/looking-glass/imgui.ini
+!/.config/systemd/
+# installed and managed by `tern remote install --user`
+/.config/systemd/user/tern-remote.service
+/.config/systemd/user/default.target.wants/tern-remote.service
+!/.config/chromium-flags.conf
+!/.config/mimeapps.list
+
+!/.local/
+/.local/*
+!/.local/bin/
+/.local/bin/.debug/
+/.local/bin/looking-glass-client
+/.local/bin/tern
+
+!/Pictures/
+/Pictures/*
+!/Pictures/Wallpapers/
+
+# system setup: stage scripts, VM definitions, sources of the /etc files we install
+!/gpu-setup/
+/gpu-setup/*.log
+
+# copies made before edits; history lives in git now
+*.bak-*

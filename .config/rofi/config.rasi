@@ -1,0 +1,15 @@
+configuration {
+    modes:                      "drun,run";
+    show-icons:                 true;
+    icon-theme:                 "Papirus-Dark";
+    font:                       "JetBrainsMono Nerd Font Propo 12";
+    terminal:                   "kitty";
+    drun-display-format:        "{name}";
+    display-drun:               "Aplikacje";
+    display-run:                "Uruchom";
+    matching:                   "fuzzy";
+    sort:                       true;
+    kb-cancel:                  "Escape,Control+g";
+}
+
+@theme "volcanic"

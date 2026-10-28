@@ -1,0 +1,101 @@
+/* dark-volcanic (Tern/omp) */
+* {
+    basalt:      #100908;
+    crater:      #1A100E;
+    lava:        #261513;
+    obsidian:    #3A201C;
+    magma:       #FF7A3D;
+    sulfur:      #F3C24F;
+    ash:         #8F7D74;
+    moss:        #4FC48A;
+    fire:        #FF5C5C;
+    text:        #ebdfd8;
+
+    background-color: transparent;
+    text-color:       @text;
+    spacing:          0;
+}
+
+window {
+    location:         center;
+    anchor:           center;
+    width:            600px;
+    background-color: #100908e6;
+    border:           2px;
+    border-color:     @magma;
+    border-radius:    16px;
+}
+
+mainbox {
+    padding:  16px;
+    spacing:  12px;
+    children: [ inputbar, listview ];
+}
+
+inputbar {
+    padding:          10px 14px;
+    spacing:          12px;
+    background-color: @lava;
+    border:           1px;
+    border-color:     @obsidian;
+    border-radius:    12px;
+    children:         [ textbox-icon, entry ];
+}
+
+textbox-icon {
+    expand:     false;
+    str:        "󰍉";
+    text-color: @magma;
+    vertical-align: 0.5;
+}
+
+entry {
+    placeholder:       "Szukaj...";
+    placeholder-color: @ash;
+    cursor-color:      @magma;
+    vertical-align:    0.5;
+}
+
+prompt { enabled: false; }
+
+listview {
+    lines:        8;
+    columns:      1;
+    fixed-height: true;
+    scrollbar:    false;
+    spacing:      4px;
+    cycle:        true;
+}
+
+element {
+    padding:       8px 12px;
+    spacing:       14px;
+    border-radius: 10px;
+    orientation:   horizontal;
+}
+
+element normal.normal, element alternate.normal { background-color: transparent; text-color: @text; }
+
+element selected.normal {
+    background-color: #FF7A3D33;
+    text-color:       @magma;
+}
+
+element-icon {
+    size:           28px;
+    vertical-align: 0.5;
+}
+
+element-text {
+    background-color: transparent;
+    text-color:       inherit;
+    vertical-align:   0.5;
+}
+
+message {
+    padding:          10px 14px;
+    background-color: @lava;
+    border-radius:    12px;
+}
+
+textbox { text-color: @text; }

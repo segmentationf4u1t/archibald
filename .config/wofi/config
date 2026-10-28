@@ -1,0 +1,9 @@
+width=620
+lines=10
+location=center
+insensitive=true
+hide_scroll=true
+allow_markup=false
+no_actions=true
+gtk_dark=true
+layer=overlay

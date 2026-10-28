@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Clipboard hook for `wl-paste --type text --watch` (started in ~/.config/hypr/hyprland.lua);
+# every new text copy arrives on stdin.
+#  - A single word wrapped in whitespace (typically a password selected with the mouse together
+#    with the space after it) is put back on the clipboard without that whitespace. wl-paste then
+#    runs this hook again for the clean text, and that version goes to the history.
+#  - Anything else goes to the cliphist history unchanged.
+# Secrets flagged by password managers (CLIPBOARD_STATE=sensitive) and clipboard clears are passed
+# straight to cliphist, which handles them itself.
+set -euo pipefail
+export LC_ALL=C   # byte semantics: ${#var} counts bytes, [[:space:]] is ASCII whitespace only
+
+if [[ ${CLIPBOARD_STATE:-data} != data ]]; then
+    exec cliphist store
+fi
+
+tmp=$(mktemp -p "${XDG_RUNTIME_DIR:-/tmp}" clipboard.XXXXXX)   # tmpfs, private to the user
+trap 'rm -f "$tmp"' EXIT
+cat > "$tmp"
+
+size=$(stat -c %s "$tmp")
+if (( size > 0 && size <= 1024 )); then          # passwords are short; big copies are left alone
+    text=$(cat "$tmp"; printf x)
+    text=${text%x}                               # keep trailing newlines
+    if (( ${#text} == size )); then              # the shell dropped no NUL bytes
+        word=${text#"${text%%[![:space:]]*}"}    # strip leading whitespace
+        word=${word%"${word##*[![:space:]]}"}    # strip trailing whitespace
+        if [[ -n $word && $word != "$text" && $word != *[[:space:]]* ]]; then
+            # wl-copy keeps serving the clipboard in the background; don't hold wl-paste's pipes
+            printf '%s' "$word" | wl-copy --type 'text/plain;charset=utf-8' >/dev/null 2>&1
+            exit 0
+        fi
+    fi
+fi
+
+cliphist store < "$tmp"

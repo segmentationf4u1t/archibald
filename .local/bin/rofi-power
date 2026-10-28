@@ -1,0 +1,27 @@
+#!/bin/sh
+# Menu zasilania w motywie Rosé Pine (rofi dmenu).
+THEME='window { width: 320px; } listview { lines: 5; } element { padding: 10px 14px; } inputbar { enabled: false; }'
+
+lock="󰌾  Zablokuj"
+logout="󰍃  Wyloguj"
+suspend="󰖔  Uśpij"
+reboot="󰜉  Uruchom ponownie"
+shutdown="󰐥  Wyłącz"
+
+choice=$(printf '%s\n' "$lock" "$logout" "$suspend" "$reboot" "$shutdown" |
+    rofi -dmenu -i -p "" -no-custom -theme-str "$THEME") || exit 0
+
+confirm() {
+    ans=$(printf '%s\n' "Nie" "Tak" |
+        rofi -dmenu -i -p "" -no-custom -mesg "$1 – na pewno?" \
+            -theme-str 'window { width: 320px; } listview { lines: 2; } element { padding: 10px 14px; } inputbar { enabled: false; }') || exit 0
+    [ "$ans" = "Tak" ]
+}
+
+case "$choice" in
+    "$lock")     pidof hyprlock >/dev/null || hyprlock ;;
+    "$logout")   if command -v hyprshutdown >/dev/null 2>&1; then hyprshutdown; else hyprctl dispatch 'hl.dsp.exit()'; fi ;;
+    "$suspend")  systemctl suspend ;;
+    "$reboot")   confirm "Uruchom ponownie" && systemctl reboot ;;
+    "$shutdown") confirm "Wyłącz komputer" && systemctl poweroff ;;
+esac

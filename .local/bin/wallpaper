@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Zmiana tapety (hyprpaper) na wszystkich monitorach; wybór zapisuje się w hyprpaper.conf.
+#   wallpaper pick  – wybór w rofi z miniaturami   (ALT + W)
+#   wallpaper next  – następna tapeta z katalogu    (ALT + SHIFT + W)
+# Tapety: ~/Pictures/Wallpapers (png/jpg/jpeg/webp).
+set -euo pipefail
+
+dir="$HOME/Pictures/Wallpapers"
+conf="$HOME/.config/hypr/hyprpaper.conf"
+
+mapfile -t walls < <(find "$dir" -maxdepth 1 -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.webp' \) | sort)
+if (( ${#walls[@]} == 0 )); then
+  notify-send -a Tapeta "Brak obrazków w $dir"
+  exit 1
+fi
+
+current=$(sed -n 's/^[[:space:]]*path[[:space:]]*=[[:space:]]*//p' "$conf" | head -n 1)
+[[ $current == "~/"* ]] && current="$HOME/${current#"~/"}"
+
+case ${1:-pick} in
+  next)
+    target=${walls[0]}
+    for i in "${!walls[@]}"; do
+      if [[ ${walls[i]} == "$current" ]]; then
+        target=${walls[(i + 1) % ${#walls[@]}]}
+      fi
+    done
+    ;;
+  pick)
+    pkill -x rofi || true
+    name=$(for w in "${walls[@]}"; do printf '%s\0icon\x1f%s\n' "${w##*/}" "$w"; done |
+      rofi -dmenu -i -p "" -mesg "Tapeta" -show-icons \
+        -theme-str 'element-icon { size: 96px; } listview { lines: 5; fixed-height: false; }') || exit 0
+    target="$dir/$name"
+    ;;
+  *)
+    echo "użycie: wallpaper [pick|next]" >&2
+    exit 2
+    ;;
+esac
+
+[[ -f $target ]] || exit 1
+# "," = domyślna dla wszystkich wyjść; dodatkowo każde aktywne wyjście z osobna,
+# bo przypisanie konkretnego monitora (np. z ręcznego hyprctl) ma pierwszeństwo przed domyślną.
+hyprctl hyprpaper wallpaper ",$target" >/dev/null
+while IFS=: read -r mon _; do
+  [[ -n $mon ]] && hyprctl hyprpaper wallpaper "$mon,$target" >/dev/null
+done < <(hyprctl hyprpaper listactive)
+
+rel=$target
+[[ $target == "$HOME"/* ]] && rel="~/${target#"$HOME"/}"
+rel=$(printf '%s' "$rel" | sed 's/[&|\\]/\\&/g')
+sed -i "s|^\([[:space:]]*path[[:space:]]*=\).*|\1 $rel|" "$conf"

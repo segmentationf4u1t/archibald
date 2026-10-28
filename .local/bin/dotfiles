@@ -1,0 +1,6 @@
+#!/bin/sh
+# git for the dotfiles: bare repository in ~/.dotfiles, work tree = $HOME, files stay where they are.
+# What gets versioned is whitelisted in ~/.config/dotfiles/ignore.
+#   dotfiles status | dotfiles diff | dotfiles add -A && dotfiles commit -m "..." | dotfiles log
+exec git --git-dir="$HOME/.dotfiles" --work-tree="$HOME" \
+    -c core.excludesFile="$HOME/.config/dotfiles/ignore" "$@"

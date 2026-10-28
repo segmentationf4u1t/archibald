@@ -1,0 +1,3 @@
+Source: https://github.com/rose-pine/wallpapers (illustration: generative/contour-line.png), license CC0 1.0.
+volcanic-contour-line.png: the same image recolored to the dark-volcanic palette (ffmpeg gradient map on luminance), CC0 1.0.
+seedream-dark-jester.jpg: from ~/Downloads/seedream-5.0-pro_A_hyper-realistic_cinematic_dark_fantasy_masterpiece._A_direct_frontal_eye-level-0.jpg (Seedream 5.0 Pro generation, portrait 1344x2016), placed at native size on a 3584x2016 (16:9) canvas whose sides are the same image blurred and darkened (ffmpeg), so cover fit shows the whole figure.
