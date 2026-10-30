@@ -1,3 +1,5 @@
 
 [Default Applications]
 x-scheme-handler/tern=so.stencil.tern.url.desktop
+inode/directory=nemo.desktop
+application/x-gnome-saved-search=nemo.desktop

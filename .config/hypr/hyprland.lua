@@ -49,7 +49,7 @@ hl.monitor({
 
 -- Set programs that you use
 local terminal    = "kitty"
-local fileManager = "thunar"
+local fileManager = "nemo"
 local menu        = "pkill -x rofi || rofi -show drun"   -- mainMod + A (toggle)
 
 
@@ -82,8 +82,9 @@ hl.on("hyprland.start", function ()
   hl.exec_cmd("hypridle")               -- lock before system sleep (no idle lock/dpms), config: ~/.config/hypr/hypridle.conf
   hl.exec_cmd("qs")                     -- Quickshell: bar + dropdowns on every output, config: ~/.config/quickshell/
 
-  -- Tray applets: give the bar a moment to register the StatusNotifierWatcher first
-  hl.exec_cmd("sleep 2; nm-applet --indicator")
+  -- Bluetooth pairing agent (PIN / passkey prompts): the bar's Bluetooth dropdown pairs through BlueZ
+  -- but registers no agent. Its tray icon is hidden by the bar (Icons.hiddenTray). Wi-Fi needs no
+  -- applet: the network dropdown asks for passwords itself.
   hl.exec_cmd("sleep 2; blueman-applet")
 
   -- Clipboard history (text + images), picked with mainMod + V. Text copies go through a hook that
@@ -105,12 +106,15 @@ hl.env("HYPRCURSOR_THEME", "rose-pine-hyprcursor")
 hl.env("HYPRCURSOR_SIZE", "24")
 hl.env("__GLX_VENDOR_LIBRARY_NAME", "nvidia")
 
--- Multi-GPU: render on the Quadro P400 (PCI 07:00.0). The main 180 Hz monitor and the left one are
--- wired to it, so their frames need no cross-GPU copy. Otherwise, in the "RTX for host" boot, the
--- RTX 4070 (01:00.0, the boot GPU) renders everything and every frame for the P400 monitors is
--- copied over; measured that way, the 180 Hz monitor only got ~90 fps and Hyprland's main thread
--- sat at ~45% CPU, felt as mouse lag. The RTX stays in the list for the monitor wired to it; in the
--- normal boot it belongs to vfio-pci (no DRM card) and the list is just the P400.
+-- Multi-GPU, "RTX for host" boot: render on the RTX 4070 (PCI 01:00.0). The 180 Hz iiyama and the right
+-- BenQ are wired to it, so games and those monitors need no cross-GPU copy; only the left BenQ (on the
+-- Quadro P400) gets an RTX -> P400 copy, which goes through system memory (P400 on PCIe 3.0 x4: ~90 fps
+-- when the 180 Hz monitor was copied this way, enough for this 60 Hz one). The other order (P400 renders)
+-- would composite every RTX game frame on the P400 and copy it back to the RTX for the iiyama; stock
+-- aquamarine 0.15.1 does that P400 -> RTX copy as a GL blit on the RTX that reached the screen unfinished
+-- (magenta flashes, aquamarine#156; the build from ~/pkgbuilds/aquamarine copies through a dumb buffer).
+-- In the normal boot the RTX belongs to vfio-pci (no DRM card): the list is just the P400 and the left
+-- BenQ is the only host monitor.
 -- /dev/dri/cardN numbers change between boots and the by-path names contain ':' (the list
 -- separator), so cards are found by PCI address. Takes effect when Hyprland starts.
 local function drmCard(pciSlot)
@@ -127,7 +131,7 @@ local function drmCard(pciSlot)
 end
 
 local drmDevices = {}
-for _, pciSlot in ipairs({ "0000:07:00.0", "0000:01:00.0" }) do   -- first = primary renderer
+for _, pciSlot in ipairs({ "0000:01:00.0", "0000:07:00.0" }) do   -- first = primary renderer
     local card = drmCard(pciSlot)
     if card then
         drmDevices[#drmDevices + 1] = card
@@ -200,7 +204,7 @@ hl.config({
             color        = "rgba(08040399)",
         },
 
-        -- Kept moderate: the desktop is rendered by a Quadro P400
+        -- Kept moderate: in the normal (VFIO) boot the desktop is rendered by a Quadro P400
         blur = {
             enabled           = true,
             size              = 6,
