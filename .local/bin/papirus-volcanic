@@ -157,5 +157,5 @@ for c in sorted(seen):
     print("  %s -> %s%s" % (c, new, "" if new != c else " (kept)"))
 PY
 
-gtk-update-icon-cache -f -t "$DEST"
+gtk-update-icon-cache -q -f -t "$DEST"
 echo "Built $DEST"

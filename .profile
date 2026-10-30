@@ -2,8 +2,8 @@
 # greetd sources it with /bin/sh before starting the session; ~/.zprofile and ~/.bash_profile
 # source it too, so keep this POSIX sh.
 
-# rust (~/.cargo/bin)
-. "$HOME/.cargo/env"
+# rust (~/.cargo/bin), when rustup is installed
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 
 # bun
 export BUN_INSTALL="$HOME/.bun"

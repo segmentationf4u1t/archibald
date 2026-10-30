@@ -101,7 +101,7 @@ are the numbered stages that built this (drivers, VFIO, libvirt, the VM definiti
 ~/.config/hypr/          hyprland.lua (Lua config), hyprlock, hypridle, hyprpaper
 ~/.config/quickshell/    the bar: shell.qml, Theme.qml, Icons.qml, bar/, popups/, components/, services/
 ~/.config/kitty/  bat/  gtk-3.0/  gtk-4.0/  rofi/  dunst/     dark-volcanic for each
-~/.config/dotfiles/      ignore (whitelist of this repo), readme/ (these images)
+~/.config/dotfiles/      install.sh, ignore (whitelist of this repo), readme/ (these images)
 ~/.local/bin/            dotfiles, screenshot, wallpaper, clipboard-store, rofi-power, papirus-volcanic, discord-openh264
 ~/.local/share/fonts/    tabler-icons (the bar's icon font)
 ~/Pictures/Wallpapers/   the two wallpapers + sources and licenses
@@ -110,37 +110,28 @@ are the numbered stages that built this (drivers, VFIO, libvirt, the VM definiti
 
 ## Install
 
-The repository is a bare git repo with `$HOME` as its work tree; files stay where their programs
-expect them and `~/.config/dotfiles/ignore` whitelists what is versioned.
+On Arch Linux, as your user:
 
 ```sh
-git clone --bare https://github.com/segmentationf4u1t/archibald.git ~/.dotfiles
-git --git-dir=$HOME/.dotfiles --work-tree=$HOME checkout   # move away files it refuses to overwrite (e.g. a stock ~/.bashrc)
-dotfiles status            # ~/.local/bin/dotfiles wraps git with the right --git-dir and excludes file
+bash <(curl -fsSL https://raw.githubusercontent.com/segmentationf4u1t/archibald/main/.config/dotfiles/install.sh)
 ```
 
-Packages (Arch, `extra`):
+[`install.sh`](.config/dotfiles/install.sh) asks for sudo once, then:
 
-```sh
-sudo pacman -S hyprland quickshell hyprpaper hyprlock hypridle kitty rofi dunst nemo \
-  zsh zsh-autosuggestions zsh-syntax-highlighting eza bat fd fzf zoxide \
-  grim slurp wl-clipboard cliphist playerctl blueman greetd \
-  ttf-jetbrains-mono-nerd noto-fonts papirus-icon-theme adw-gtk-theme
-chsh -s /usr/bin/zsh
-```
+1. installs the packages (Hyprland, Quickshell, kitty, Nemo, zsh tooling, fonts, Papirus, greetd, ...)
+2. clones this repo as a bare repo into `~/.dotfiles` and checks it out into `$HOME`; files it would
+   overwrite are moved to `~/.dotfiles-backup/<time>/` first
+3. clones fzf-tab, builds the Papirus-Dark-Volcanic icons, refreshes the font and bat caches
+4. sets the GTK dark theme, icon theme and Nemo preferences (gsettings), makes zsh the login shell
+5. installs the greetd login screen for your user and makes greetd the display manager
 
-Then the pieces that are generated or come from elsewhere:
+Reboot and you land on the login screen. Running the same command again updates an installed
+machine (fast-forward + re-apply). `--no-greetd` keeps your current display manager,
+`--no-packages` skips pacman. The GPU passthrough stages in `gpu-setup/` are specific to this
+hardware and stay manual.
 
-```sh
-git clone --depth 1 https://github.com/Aloxaf/fzf-tab ~/.local/share/zsh/plugins/fzf-tab
-papirus-volcanic                     # builds ~/.local/share/icons/Papirus-Dark-Volcanic (magma folders)
-bat cache --build                    # registers the dark-volcanic bat theme
-sudo cp -r ~/gpu-setup/etc/greetd /etc/ && sudo cp ~/gpu-setup/etc/tmpfiles.d/greetd-greeter.conf /etc/tmpfiles.d/
-sudo systemd-tmpfiles --create && sudo systemctl enable greetd
-```
-
-Settings that are not files (set once): `gsettings set org.gnome.desktop.interface icon-theme
-Papirus-Dark-Volcanic`, Nemo list view and `kitty` as its terminal.
+Afterwards `dotfiles` (in `~/.local/bin`) is git for this repo: `dotfiles status`, `dotfiles commit`,
+`dotfiles push`. `~/.config/dotfiles/ignore` whitelists what is versioned.
 
 ## Credits
 
