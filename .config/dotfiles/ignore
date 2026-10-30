@@ -8,6 +8,7 @@
 !/.profile
 !/.zshrc
 !/.zprofile
+!/README.md
 
 !/.config/
 /.config/*
