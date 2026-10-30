@@ -114,8 +114,8 @@ The repository is a bare git repo with `$HOME` as its work tree; files stay wher
 expect them and `~/.config/dotfiles/ignore` whitelists what is versioned.
 
 ```sh
-git clone --bare <url> ~/.dotfiles
-git --git-dir=$HOME/.dotfiles --work-tree=$HOME checkout
+git clone --bare https://github.com/segmentationf4u1t/archibald.git ~/.dotfiles
+git --git-dir=$HOME/.dotfiles --work-tree=$HOME checkout   # move away files it refuses to overwrite (e.g. a stock ~/.bashrc)
 dotfiles status            # ~/.local/bin/dotfiles wraps git with the right --git-dir and excludes file
 ```
 
