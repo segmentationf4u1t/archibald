@@ -1,12 +1,12 @@
 import QtQuick
 import qs
 
-// Nerd Font icon (Material Design range); write the glyph character literally.
+// Tabler icon: text is a character from Icons.glyph("name").
 Text {
     property int size: Theme.iconSize
 
     color: Theme.text
-    font.family: Theme.font
+    font.family: Icons.font
     font.pixelSize: size
     horizontalAlignment: Text.AlignHCenter
     verticalAlignment: Text.AlignVCenter

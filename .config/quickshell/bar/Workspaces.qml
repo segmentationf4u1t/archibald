@@ -1,12 +1,11 @@
 import QtQuick
 import Quickshell
 import Quickshell.Hyprland
-import Quickshell.Widgets
 import qs
 import qs.components
 
-// This monitor's workspaces: number + icons of the windows on it. The one shown here is a raised
-// pill (number in magma when this monitor has focus, sulfur otherwise); urgent ones are fire.
+// This monitor's workspaces: number + Tabler icons of the windows on it. The one shown here is a raised
+// pill (number in magma when this monitor has focus); urgent ones are fire.
 // Click switches, wheel goes to the previous / next workspace.
 Item {
     id: root
@@ -19,10 +18,11 @@ Item {
         .filter(ws => ws.id > 0 && ws.monitor !== null && ws.monitor === root.bar.monitor)
         .sort((a, b) => a.id - b.id)
 
+    // by window class, then by the icon / id of its desktop entry (e.g. a class that differs from the binary)
     function iconFor(toplevel) {
         const appId = toplevel.wayland?.appId || toplevel.lastIpcObject?.class || "";
         const entry = appId !== "" ? DesktopEntries.heuristicLookup(appId) : null;
-        return Quickshell.iconPath(entry?.icon || appId, "application-x-executable");
+        return Icons.app([appId, entry?.icon, entry?.id]);
     }
 
     implicitWidth: row.implicitWidth + 8
@@ -70,8 +70,7 @@ Item {
                         font.weight: slot.shownHere ? Font.Bold : Font.Medium
                         color: slot.modelData.urgent ? Theme.fire
                             : slot.focusedHere ? Theme.magma
-                            : slot.shownHere ? Theme.sulfur
-                            : hover.hovered ? Theme.ember
+                            : slot.shownHere || hover.hovered ? Theme.text
                             : Theme.ash
 
                         Behavior on color { ColorAnimation { duration: Theme.animFast } }
@@ -80,12 +79,12 @@ Item {
                     Repeater {
                         model: slot.windows.slice(0, root.maxIcons)
 
-                        delegate: IconImage {
+                        delegate: Glyph {
                             required property HyprlandToplevel modelData
 
                             anchors.verticalCenter: parent.verticalCenter
-                            implicitSize: 16
-                            source: root.iconFor(modelData)
+                            text: root.iconFor(modelData)
+                            size: 16
                             opacity: slot.shownHere || hover.hovered ? 1 : 0.55
 
                             Behavior on opacity { NumberAnimation { duration: Theme.animFast } }

@@ -88,7 +88,16 @@ Singleton {
             // gpu
             "Power draw": "Pobór mocy",
             "Fan": "Wentylator",
-            "No data from nvidia-smi": "Brak danych z nvidia-smi"
+            "No data from nvidia-smi": "Brak danych z nvidia-smi",
+            // disks
+            "Disks": "Dyski",
+            "Read %1 · write %2": "Odczyt %1 · zapis %2",
+            "R": "O",
+            "W": "Z",
+            "Total read": "Odczytano",
+            "Total written": "Zapisano",
+            "No disks found": "Nie znaleziono dysków",
+            "Filesystems": "Systemy plików"
         }
     })
 }

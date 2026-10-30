@@ -99,7 +99,7 @@ PanelWindow {
         spacing: 2
 
         BarButton {
-            icon: "󰣇"
+            icon: Icons.glyph("flame")
             iconSize: 18
             iconColor: Theme.magma
             onClicked: Quickshell.execDetached(["sh", "-c", "pkill -x rofi || rofi -show drun"])
@@ -159,7 +159,7 @@ PanelWindow {
         BarButton {
             id: audioButton
             active: bar.openPopup === "audio"
-            icon: bar.sinkMuted ? "󰖁" : bar.sinkVolume < 0.34 ? "󰕿" : bar.sinkVolume < 0.67 ? "󰖀" : "󰕾"
+            icon: Icons.volume(bar.sinkVolume, bar.sinkMuted)
             label: bar.sinkMuted ? "mute" : Math.round(bar.sinkVolume * 100) + "%"
             iconColor: bar.sinkMuted ? Theme.fire : Theme.magma
             onClicked: mouse => {
@@ -177,9 +177,9 @@ PanelWindow {
         BarButton {
             id: bluetoothButton
             active: bar.openPopup === "bluetooth"
-            icon: !bar.btAdapter?.enabled ? "󰂲" : bar.btConnected > 0 ? "󰂱" : "󰂯"
+            icon: Icons.glyph(!bar.btAdapter?.enabled ? "bluetooth-off" : bar.btConnected > 0 ? "bluetooth-connected" : "bluetooth")
             label: bar.btConnected > 0 ? String(bar.btConnected) : ""
-            iconColor: bar.btAdapter?.enabled ? Theme.text : Theme.ashDim
+            iconColor: bar.btAdapter?.enabled ? Theme.magma : Theme.ashDim
             onClicked: bar.togglePopup("bluetooth")
         }
 
@@ -187,44 +187,53 @@ PanelWindow {
             id: networkButton
             readonly property real signal: bar.wifiNetwork?.signalStrength ?? 0
             active: bar.openPopup === "network"
-            icon: bar.wiredUp ? "󰈀"
-                : !bar.wifiNetwork ? "󰤮"
-                : signal < 0.25 ? "󰤟" : signal < 0.5 ? "󰤢" : signal < 0.75 ? "󰤥" : "󰤨"
-            iconColor: bar.wiredUp || bar.wifiNetwork ? Theme.moss : Theme.fire
+            icon: bar.wiredUp ? Icons.glyph("network")
+                : !bar.wifiNetwork ? Icons.glyph("wifi-off")
+                : Icons.wifi(signal)
+            iconColor: bar.wiredUp || bar.wifiNetwork ? Theme.magma : Theme.fire
             onClicked: bar.togglePopup("network")
         }
 
         BarButton {
             id: cpuButton
             active: bar.openPopup === "cpu"
-            icon: "󰍛"
+            icon: Icons.glyph("cpu")
             label: Math.round(SysStats.cpu) + "%"
-            iconColor: SysStats.cpu >= 85 ? Theme.fire : Theme.sulfur
+            iconColor: SysStats.cpu >= 85 ? Theme.fire : Theme.magma
             onClicked: bar.togglePopup("cpu")
         }
 
         BarButton {
             id: memoryButton
             active: bar.openPopup === "memory"
-            icon: "󰘚"
+            icon: Icons.glyph("device-sd-card")
             label: Math.round(SysStats.mem) + "%"
-            iconColor: SysStats.mem >= 85 ? Theme.fire : Theme.ember
+            iconColor: SysStats.mem >= 85 ? Theme.fire : Theme.magma
             onClicked: bar.togglePopup("memory")
+        }
+
+        BarButton {
+            id: diskButton
+            active: bar.openPopup === "disk"
+            icon: Icons.glyph("server")
+            label: Math.round(SysStats.diskUtil) + "%"   // busiest disk, % of time busy
+            iconColor: SysStats.diskUtil >= 85 ? Theme.fire : Theme.magma
+            onClicked: bar.togglePopup("disk")
         }
 
         BarButton {
             id: gpuButton
             visible: SysStats.gpus.length > 0
             active: bar.openPopup === "gpu"
-            icon: "󰢮"
+            icon: Icons.glyph("gpu")
             label: Math.round(SysStats.gpu) + "%"
-            iconColor: SysStats.gpu >= 85 ? Theme.fire : Theme.text
+            iconColor: SysStats.gpu >= 85 ? Theme.fire : Theme.magma
             onClicked: bar.togglePopup("gpu")
         }
 
         BarButton {
-            icon: "󰐥"
-            iconColor: Theme.fire
+            icon: Icons.glyph("power")
+            iconColor: Theme.magma
             padding: 12
             onClicked: Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/rofi-power"])
         }
@@ -238,5 +247,6 @@ PanelWindow {
     Dropdown { bar: bar; name: "network"; anchorItem: networkButton; source: Qt.resolvedUrl("../popups/NetworkPopup.qml") }
     Dropdown { bar: bar; name: "cpu"; anchorItem: cpuButton; source: Qt.resolvedUrl("../popups/CpuPopup.qml") }
     Dropdown { bar: bar; name: "memory"; anchorItem: memoryButton; source: Qt.resolvedUrl("../popups/MemoryPopup.qml") }
+    Dropdown { bar: bar; name: "disk"; anchorItem: diskButton; source: Qt.resolvedUrl("../popups/DiskPopup.qml") }
     Dropdown { bar: bar; name: "gpu"; anchorItem: gpuButton; source: Qt.resolvedUrl("../popups/GpuPopup.qml") }
 }

@@ -1,4 +1,4 @@
-//@ pragma IconTheme Papirus-Dark
+//@ pragma IconTheme Papirus-Dark-Volcanic
 import QtQuick
 import Quickshell
 import Quickshell.Io
@@ -13,7 +13,7 @@ ShellRoot {
         delegate: Bar {}
     }
 
-    // qs ipc call bar toggle <calendar|audio|bluetooth|network|cpu|memory|gpu>
+    // qs ipc call bar toggle <calendar|audio|bluetooth|network|cpu|memory|disk|gpu>
     // acts on the bar of the focused monitor
     IpcHandler {
         target: "bar"

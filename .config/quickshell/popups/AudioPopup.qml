@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
-import Quickshell.Widgets
 import Quickshell.Services.Pipewire
 import qs
 import qs.components
@@ -58,10 +57,8 @@ Item {
 
         function volumeIcon() {
             if (input)
-                return muted ? "󰍭" : "󰍬";
-            if (muted || volume <= 0)
-                return "󰖁";
-            return volume < 0.34 ? "󰕿" : volume < 0.67 ? "󰖀" : "󰕾";
+                return Icons.glyph(muted ? "microphone-off" : "microphone");
+            return Icons.volume(volume, muted || volume <= 0);
         }
 
         function deviceIcon(n) {
@@ -70,12 +67,12 @@ Item {
             const form = p["device.form-factor"] ?? "";
             const text = ((n.description ?? "") + " " + (n.name ?? "")).toLowerCase();
             if (input)
-                return "󰍬";
+                return Icons.glyph("microphone");
             if (api === "bluez5" || n.name.startsWith("bluez_") || form === "headphone" || form === "headset" || form === "hands-free")
-                return "󰋋";
+                return Icons.glyph("headphones");
             if (text.includes("hdmi") || text.includes("displayport") || text.includes("display port") || form === "hdmi" || form === "tv")
-                return "󰍹";
-            return "󰓃";
+                return Icons.glyph("device-desktop");
+            return Icons.glyph("device-speaker");
         }
 
         function fullName(n) {
@@ -202,29 +199,17 @@ Item {
             const m = node ? (node.properties["media.name"] ?? "") : "";
             return m === appName || m === "Playback" || m === "playback" || m === "Audio Stream" ? "" : m;
         }
-        readonly property string iconName: node ? (node.properties["application.icon-name"] ?? "") : ""
-        readonly property string iconSource: iconName !== "" ? Quickshell.iconPath(iconName, true) : ""
+        // Tabler icon of the app (by desktop icon name, binary, name); unknown apps get a note
+        readonly property string icon: node ? Icons.app([node.properties["application.icon-name"], node.properties["application.process.binary"], node.properties["application.name"]], "music") : ""
 
         spacing: 10
 
-        Item {
+        Glyph {
             Layout.preferredWidth: 24
             Layout.preferredHeight: 24
             Layout.alignment: Qt.AlignVCenter
-
-            IconImage {
-                anchors.fill: parent
-                visible: row.iconSource !== ""
-                source: row.iconSource
-            }
-
-            Glyph {
-                anchors.centerIn: parent
-                visible: row.iconSource === ""
-                text: "󰎆"
-                color: Theme.ash
-                size: 20
-            }
+            text: row.icon
+            size: 20
         }
 
         ColumnLayout {
@@ -271,7 +256,7 @@ Item {
         }
 
         IconButton {
-            icon: row.muted ? "󰖁" : "󰕾"
+            icon: Icons.glyph(row.muted ? "volume-3" : "volume")
             checked: row.muted
             enabled: row.audio !== null
             implicitWidth: 28

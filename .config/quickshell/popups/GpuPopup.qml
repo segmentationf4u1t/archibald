@@ -59,7 +59,7 @@ Item {
 
                         Glyph {
                             anchors.centerIn: parent
-                            text: "󰢮"
+                            text: Icons.glyph("gpu")
                             size: 22
                             color: Theme.magma
                         }

@@ -1,11 +1,15 @@
 import QtQuick
+import QtQuick.Effects
 import Quickshell
 import Quickshell.Services.SystemTray
 import Quickshell.Widgets
 import qs
+import qs.components
 
-// StatusNotifier icons. Left click: activate (or menu if the item only has a menu),
-// middle: secondary action, right: themed menu dropdown (bar's "traymenu" popup).
+// StatusNotifier icons. Known apps are drawn with their Tabler icon (Icons.tray), others as a
+// monochrome version of their own icon; items whose job a bar module does are hidden (Icons.hiddenTray).
+// Left click: activate (or menu if the item only has a menu), middle: secondary action,
+// right: themed menu dropdown (bar's "traymenu" popup).
 Row {
     id: root
 
@@ -16,12 +20,14 @@ Row {
     rightPadding: 6
 
     Repeater {
-        model: SystemTray.items
+        model: SystemTray.items.values.filter(item => !Icons.hiddenTray.includes(item.id))
 
         delegate: Item {
             id: slot
 
             required property SystemTrayItem modelData
+            readonly property string glyph: Icons.tray(modelData.id)
+            readonly property real iconOpacity: modelData.status === Status.Passive ? 0.55 : 1
 
             width: 28
             height: Theme.barHeight
@@ -38,11 +44,34 @@ Row {
                 Behavior on color { ColorAnimation { duration: Theme.animFast } }
             }
 
+            Glyph {
+                anchors.centerIn: parent
+                visible: slot.glyph !== ""
+                text: slot.glyph
+                size: 18
+                color: Theme.magma
+                opacity: slot.iconOpacity
+            }
+
+            // unknown app: its own icon in grayscale, tinted with the text color (a flat silhouette would
+            // turn round app icons into blank discs)
             IconImage {
+                id: ownIcon
                 anchors.centerIn: parent
                 implicitSize: 18
-                source: slot.modelData.icon
-                opacity: slot.modelData.status === Status.Passive ? 0.55 : 1
+                visible: false
+                source: slot.glyph === "" ? slot.modelData.icon : ""
+            }
+
+            MultiEffect {
+                anchors.fill: ownIcon
+                visible: slot.glyph === ""
+                source: ownIcon
+                brightness: 0.15
+                saturation: -1.0
+                colorization: 1.0
+                colorizationColor: Theme.magma
+                opacity: slot.iconOpacity
             }
 
             MouseArea {

@@ -82,9 +82,9 @@ Item {
 
                 Glyph {
                     anchors.centerIn: parent
-                    text: "󰘚"
+                    text: Icons.glyph("device-sd-card")
                     size: 22
-                    color: Theme.ember
+                    color: Theme.magma
                 }
             }
 

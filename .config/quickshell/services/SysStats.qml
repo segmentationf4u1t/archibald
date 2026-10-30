@@ -4,9 +4,9 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 
-// CPU / memory / GPU / network sampling. Cheap reads of /proc every `interval`;
-// expensive extras (top processes, per-core clocks) run only while a popup asks for them
-// via cpuDetailUsers / memDetailUsers (increment on open, decrement on close).
+// CPU / memory / GPU / network / disk sampling. Cheap reads of /proc every `interval`;
+// expensive extras (top processes, per-core clocks, disk temperatures, df) run only while a popup asks
+// for them via cpuDetailUsers / memDetailUsers / diskDetailUsers (increment on open, decrement on close).
 Singleton {
     id: root
 
@@ -55,6 +55,24 @@ Singleton {
     property var netRxHistory: []
     property var netTxHistory: []
 
+    // ---- disks (/proc/diskstats, whole physical disks) ----
+    // [{name, model, size, read, write, util, readTotal, writtenTotal}]: bytes, bytes/s, % of time busy;
+    // totals count since boot
+    property var disks: []
+    property var diskReadHistory: ({})                // name -> [bytes/s...]
+    property var diskWriteHistory: ({})
+    readonly property real diskUtil: disks.reduce((m, d) => Math.max(m, d.util), 0)   // busiest disk
+    readonly property real diskRead: disks.reduce((s, d) => s + d.read, 0)
+    readonly property real diskWrite: disks.reduce((s, d) => s + d.write, 0)
+    property var diskTemps: ({})                      // name -> °C, only while diskDetailUsers > 0
+    property var filesystems: []                      // [{source, fstype, size, used, avail, target}], ditto
+    property int diskDetailUsers: 0
+
+    onDiskDetailUsersChanged: {
+        if (diskDetailUsers > 0 && !diskDetailProc.running)
+            diskDetailProc.running = true;
+    }
+
     function push(history, value) {
         const next = history.slice(-(historyLength - 1));
         next.push(value);
@@ -79,6 +97,9 @@ Singleton {
     // ---------------------------------------------------------------- sampling
     property var _prevStat: []
     property var _prevNet: null
+    property var _prevDisk: ({})                      // name -> {rd, wr, busy, t}
+    property var _diskInfo: ({})                      // name -> {model, size} from lsblk
+    readonly property var _wholeDisk: /^(nvme\d+n\d+|sd[a-z]+|vd[a-z]+|xvd[a-z]+|mmcblk\d+)$/
 
     Timer {
         interval: root.interval
@@ -91,6 +112,7 @@ Singleton {
             loadavg.reload();
             uptimeFile.reload();
             route.reload();
+            diskstats.reload();
             if (tempFile.path !== "")
                 tempFile.reload();
             if (root.cpuDetailUsers > 0) {
@@ -100,6 +122,8 @@ Singleton {
             }
             if (root.memDetailUsers > 0 && !topMemProc.running)
                 topMemProc.running = true;
+            if (root.diskDetailUsers > 0 && !diskDetailProc.running)
+                diskDetailProc.running = true;
         }
     }
 
@@ -252,6 +276,76 @@ Singleton {
         }
     }
 
+    FileView {
+        id: diskstats
+        path: "/proc/diskstats"
+        onLoaded: {
+            const now = Date.now();
+            const prev = root._prevDisk;
+            const next = {};
+            const list = [];
+            let fresh = false;
+            for (const line of text().split("\n")) {
+                // major minor name | reads merged sectors ms | writes merged sectors ms | in-flight io_ticks ...
+                const f = line.trim().split(/\s+/);
+                if (f.length < 14 || !root._wholeDisk.test(f[2]))
+                    continue;
+                const name = f[2];
+                const cur = { rd: Number(f[5]) * 512, wr: Number(f[9]) * 512, busy: Number(f[12]), t: now };
+                next[name] = cur;
+                const info = root._diskInfo[name];
+                if (info && info.size === 0)
+                    continue;   // empty card-reader slot
+                const p = prev[name];
+                const dt = p && now > p.t ? now - p.t : 0;
+                fresh = fresh || dt > 0;
+                list.push({
+                    name: name,
+                    model: info ? info.model : "",
+                    size: info ? info.size : 0,
+                    read: dt ? Math.max(0, (cur.rd - p.rd) * 1000 / dt) : 0,
+                    write: dt ? Math.max(0, (cur.wr - p.wr) * 1000 / dt) : 0,
+                    util: dt ? Math.min(100, Math.max(0, 100 * (cur.busy - p.busy) / dt)) : 0,
+                    readTotal: cur.rd,
+                    writtenTotal: cur.wr
+                });
+            }
+            // disk plugged in / removed (or first read): refresh models and sizes
+            if (Object.keys(next).sort().join(" ") !== Object.keys(prev).sort().join(" "))
+                lsblkProc.running = true;
+            root._prevDisk = next;
+            list.sort((a, b) => a.name.localeCompare(b.name));
+            root.disks = list;
+            if (!fresh)
+                return;   // the first read has nothing to diff against
+            const rh = {};
+            const wh = {};
+            for (const d of list) {
+                rh[d.name] = root.push(root.diskReadHistory[d.name] || [], d.read);
+                wh[d.name] = root.push(root.diskWriteHistory[d.name] || [], d.write);
+            }
+            root.diskReadHistory = rh;
+            root.diskWriteHistory = wh;
+        }
+    }
+
+    Process {
+        id: lsblkProc
+        command: ["lsblk", "-J", "-d", "-b", "-o", "NAME,MODEL,SIZE"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const info = {};
+                try {
+                    for (const d of JSON.parse(text).blockdevices)
+                        info[d.name] = { model: (d.model || "").trim(), size: Number(d.size) || 0 };
+                } catch (e) {
+                    return;
+                }
+                root._diskInfo = info;
+            }
+        }
+    }
+
     // One long-running nvidia-smi streams a line per GPU every interval (no respawning).
     Process {
         running: true
@@ -308,6 +402,41 @@ Singleton {
                 const m = l.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
                 return m ? { pid: Number(m[1]), rss: Number(m[2]) * 1024, name: m[3] } : null;
             }).filter(x => x !== null)
+        }
+    }
+
+    // Disk temperatures (NVMe hwmon / SATA drivetemp) and local filesystem usage, one shell per sample.
+    Process {
+        id: diskDetailProc
+        command: ["sh", "-c", `
+            for b in /sys/block/*; do
+                for f in "$b"/device/hwmon*/temp1_input "$b"/device/hwmon/hwmon*/temp1_input; do
+                    [ -r "$f" ] && echo "T \${b##*/} $(cat "$f")" && break
+                done
+            done
+            df -B1 -l -x tmpfs -x devtmpfs -x efivarfs -x overlay -x squashfs -x ramfs \\
+                --output=source,fstype,size,used,avail,target | sed '1d; s/^/F /'`]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const temps = {};
+                const fs = [];
+                const seen = new Set();
+                for (const line of text.split("\n")) {
+                    let m = line.match(/^T (\S+) (\d+)$/);
+                    if (m) {
+                        temps[m[1]] = Number(m[2]) / 1000;
+                        continue;
+                    }
+                    m = line.match(/^F (\S+)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/);
+                    // one row per device (btrfs subvolumes mount the same one several times)
+                    if (m && !seen.has(m[1])) {
+                        seen.add(m[1]);
+                        fs.push({ source: m[1], fstype: m[2], size: Number(m[3]), used: Number(m[4]), avail: Number(m[5]), target: m[6].trim() });
+                    }
+                }
+                root.diskTemps = temps;
+                root.filesystems = fs;
+            }
         }
     }
 }

@@ -47,7 +47,7 @@ Item {
             Layout.fillWidth: true
             implicitWidth: 200
             visible: root.stack.length > 0
-            icon: "󰅁"
+            icon: Icons.glyph("chevron-left")
             title: root.stack.length > 0 ? root.plain(root.stack[root.stack.length - 1].text) : ""
             onClicked: root.stack = root.stack.slice(0, -1)
         }
@@ -89,9 +89,9 @@ Item {
 
                         Glyph {
                             visible: entry.modelData.buttonType !== QsMenuButtonType.None
-                            text: entry.modelData.checkState === Qt.Checked
-                                ? (entry.modelData.buttonType === QsMenuButtonType.RadioButton ? "󰐾" : "󰄵")
-                                : (entry.modelData.buttonType === QsMenuButtonType.RadioButton ? "󰐽" : "󰄱")
+                            text: Icons.glyph(entry.modelData.checkState === Qt.Checked
+                                ? (entry.modelData.buttonType === QsMenuButtonType.RadioButton ? "circle-dot" : "square-check")
+                                : (entry.modelData.buttonType === QsMenuButtonType.RadioButton ? "circle" : "square"))
                             color: entry.modelData.checkState === Qt.Checked ? Theme.magma : Theme.ash
                         }
 
@@ -109,7 +109,7 @@ Item {
 
                         Glyph {
                             visible: entry.modelData.hasChildren
-                            text: "󰅂"
+                            text: Icons.glyph("chevron-right")
                             color: Theme.ash
                         }
                     }

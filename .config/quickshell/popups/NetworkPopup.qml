@@ -60,7 +60,7 @@ Item {
 
     // ---- network helpers -------------------------------------------------------------------
     function signalGlyph(s) {
-        return s < 0.25 ? "󰤟" : s < 0.5 ? "󰤢" : s < 0.75 ? "󰤥" : "󰤨";
+        return Icons.wifi(s);
     }
 
     function isOpen(sec) {
@@ -234,43 +234,6 @@ Item {
         }
     }
 
-    component RateChart: ColumnLayout {
-        id: chart
-        property string arrow: ""
-        property color tint: Theme.magma
-        property real rate: 0
-        property var history: []
-
-        Layout.fillWidth: true
-        Layout.preferredWidth: 1
-        spacing: 4
-
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 6
-
-            Label {
-                text: chart.arrow
-                color: chart.tint
-                font.weight: Font.Bold
-            }
-
-            Label {
-                Layout.fillWidth: true
-                text: SysStats.formatRate(chart.rate)
-                small: true
-            }
-        }
-
-        AreaChart {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 44
-            values: chart.history
-            maxValue: 0
-            color: chart.tint
-        }
-    }
-
     implicitWidth: 400
     implicitHeight: col.implicitHeight
 
@@ -285,7 +248,7 @@ Item {
             spacing: 10
 
             Glyph {
-                text: "󰖩"
+                text: Icons.glyph("wifi")
                 size: 20
                 color: Networking.wifiEnabled ? Theme.magma : Theme.ashDim
             }
@@ -321,7 +284,7 @@ Item {
 
                 ConnBlock {
                     visible: root.wiredDev !== null
-                    icon: "󰈀"
+                    icon: Icons.glyph("network")
                     title: I18n.tr("Wired")
                     line1: root.wiredDev ? root.wiredDev.name + (root.wiredDev.linkSpeed > 0 ? " · " + root.formatSpeed(root.wiredDev.linkSpeed) : "") : ""
                     line2: wiredIp.ip
@@ -350,14 +313,14 @@ Item {
                     spacing: 12
 
                     RateChart {
-                        arrow: "↓"
+                        caption: "↓"
                         tint: Theme.magma
                         rate: SysStats.netRx
                         history: SysStats.netRxHistory
                     }
 
                     RateChart {
-                        arrow: "↑"
+                        caption: "↑"
                         tint: Theme.sulfur
                         rate: SysStats.netTx
                         history: SysStats.netTxHistory
@@ -370,7 +333,7 @@ Item {
                     spacing: 8
 
                     Glyph {
-                        text: "󰀦"
+                        text: Icons.glyph("alert-triangle")
                         color: Theme.sulfur
                     }
 
@@ -527,7 +490,7 @@ Item {
                                     Glyph {
                                         visible: !row.open
                                         height: 26
-                                        text: "󰌾"
+                                        text: Icons.glyph("lock")
                                         size: 14
                                         color: Theme.ash
                                     }
@@ -536,7 +499,7 @@ Item {
                                         visible: row.net.connected
                                         width: 26
                                         height: 26
-                                        icon: "󰌸"
+                                        icon: Icons.glyph("link-off")
                                         iconColor: Theme.ash
                                         onClicked: row.net.disconnect()
                                     }
@@ -612,7 +575,7 @@ Item {
                                                 anchors.verticalCenter: parent.verticalCenter
                                                 width: 26
                                                 height: 26
-                                                icon: row.pskVisible ? "󰛑" : "󰛐"
+                                                icon: Icons.glyph(row.pskVisible ? "eye-off" : "eye")
                                                 iconColor: Theme.ash
                                                 onClicked: row.pskVisible = !row.pskVisible
                                             }

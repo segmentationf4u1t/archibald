@@ -53,29 +53,19 @@ Item {
 
     function deviceGlyph(icon) {
         const i = (icon || "").toLowerCase();
-        if (i.indexOf("headset") >= 0)
-            return "󰋎";
-        if (i.indexOf("headphone") >= 0 || i.indexOf("audio-card") >= 0)
-            return "󰋋";
-        if (i.indexOf("speaker") >= 0)
-            return "󰓃";
-        if (i.indexOf("mouse") >= 0)
-            return "󰍽";
-        if (i.indexOf("keyboard") >= 0)
-            return "󰌌";
-        if (i.indexOf("gaming") >= 0 || i.indexOf("joystick") >= 0 || i.indexOf("gamepad") >= 0)
-            return "󰊗";
-        if (i.indexOf("phone") >= 0)
-            return "󰄜";
-        if (i.indexOf("computer") >= 0 || i.indexOf("laptop") >= 0)
-            return "󰌢";
-        if (i.indexOf("display") >= 0 || i.indexOf("monitor") >= 0 || i.indexOf("video") >= 0)
-            return "󰍹";
-        if (i.indexOf("printer") >= 0)
-            return "󰐪";
-        if (i.indexOf("camera") >= 0)
-            return "󰄀";
-        return "󰂯";
+        const name = i.indexOf("headset") >= 0 ? "headset"
+            : i.indexOf("headphone") >= 0 || i.indexOf("audio-card") >= 0 ? "headphones"
+            : i.indexOf("speaker") >= 0 ? "device-speaker"
+            : i.indexOf("mouse") >= 0 ? "mouse"
+            : i.indexOf("keyboard") >= 0 ? "keyboard"
+            : i.indexOf("gaming") >= 0 || i.indexOf("joystick") >= 0 || i.indexOf("gamepad") >= 0 ? "device-gamepad-2"
+            : i.indexOf("phone") >= 0 ? "device-mobile"
+            : i.indexOf("computer") >= 0 || i.indexOf("laptop") >= 0 ? "device-laptop"
+            : i.indexOf("display") >= 0 || i.indexOf("monitor") >= 0 || i.indexOf("video") >= 0 ? "device-desktop"
+            : i.indexOf("printer") >= 0 ? "printer"
+            : i.indexOf("camera") >= 0 ? "camera"
+            : "bluetooth";
+        return Icons.glyph(name);
     }
 
     function deviceSubtitle(d) {
@@ -174,7 +164,7 @@ Item {
             spacing: 10
 
             Glyph {
-                text: !root.adapter || !root.adapterOn ? "󰂲" : "󰂯"
+                text: Icons.glyph(!root.adapter || !root.adapterOn ? "bluetooth-off" : "bluetooth")
                 color: root.adapterOn ? Theme.magma : Theme.ashDim
                 size: 20
             }
@@ -279,7 +269,7 @@ Item {
 
                         IconButton {
                             visible: rowHover.hovered
-                            icon: "󰆴"
+                            icon: Icons.glyph("trash")
                             iconColor: Theme.ash
                             implicitWidth: 28
                             implicitHeight: 28
@@ -313,7 +303,7 @@ Item {
                 }
 
                 IconButton {
-                    icon: "󰑐"
+                    icon: Icons.glyph("refresh")
                     checked: root.adapter !== null && root.adapter.discovering
                     implicitWidth: 28
                     implicitHeight: 28

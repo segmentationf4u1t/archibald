@@ -98,7 +98,7 @@ Item {
 
                 Glyph {
                     anchors.centerIn: parent
-                    text: "󰍛"
+                    text: Icons.glyph("cpu")
                     size: 22
                     color: Theme.magma
                 }

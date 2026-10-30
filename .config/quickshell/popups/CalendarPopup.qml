@@ -44,7 +44,7 @@ ColumnLayout {
         Layout.fillWidth: true
 
         IconButton {
-            icon: "󰅁"
+            icon: Icons.glyph("chevron-left")
             onClicked: root.shift(-1)
         }
 
@@ -66,7 +66,7 @@ ColumnLayout {
         }
 
         IconButton {
-            icon: "󰅂"
+            icon: Icons.glyph("chevron-right")
             onClicked: root.shift(1)
         }
     }
