@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# papirus-volcanic — (re)generate the user-local icon theme "Papirus-Dark-Volcanic".
+#
+# What: Papirus-Dark with its folder-family icons recoloured from Papirus' default
+#       violet to magma, matching the "dark-volcanic" palette in
+#       ~/.config/quickshell/Theme.qml (magma #FF7A3D accent, obsidian/crater darks).
+# Why:  Papirus ships violet folders via symlinks (folder.svg -> folder-violet.svg) and
+#       16px folders as monochrome ColorScheme-Text SVGs; neither can be recoloured
+#       with a setting, and /usr is read-only, so we write real SVGs into a theme in
+#       ~/.local/share/icons that shadows only those names and inherits everything
+#       else from Papirus-Dark (Inherits=Papirus-Dark,breeze-dark,hicolor).
+# How:  - every `places` dir of Papirus-Dark whose icons resolve to a *-violet* file
+#         (22/24/32/48/64 px, plus @2x): write the resolved SVG under the generic name
+#         with violet-family hues swapped to magma (greys/whites untouched);
+#       - 16px / 16px@2x `places`: folder-family icons (folder*, inode-directory,
+#         user-home*, user-desktop) get ColorScheme-Text set to magma;
+#       - index.theme lists only the dirs populated here; icon cache rebuilt.
+# Rebuild after a papirus-icon-theme update: just run `papirus-volcanic` (idempotent).
+set -euo pipefail
+
+SRC=${PAPIRUS_SRC:-/usr/share/icons/Papirus-Dark}
+DEST=${PAPIRUS_VOLCANIC_DEST:-$HOME/.local/share/icons/Papirus-Dark-Volcanic}
+
+[[ -f $SRC/index.theme ]] || { echo "papirus-volcanic: $SRC/index.theme not found" >&2; exit 1; }
+
+rm -rf -- "$DEST"
+mkdir -p -- "$DEST"
+
+python3 - "$SRC" "$DEST" <<'PY'
+import colorsys, os, re, sys
+
+src, dest = sys.argv[1:3]
+
+MAGMA = "#ff7a3d"          # Theme.qml: magma (accent)
+MAGMA_HUE = 19 / 360       # hue of #FF7A3D
+
+# Pinned mapping for the tones Papirus actually uses in its violet folders.
+# Anything violet that is not pinned falls back to a hue swap (see swap()).
+PINNED = {
+    "#7e57c2": "#ff7a3d",  # folder front   -> magma
+    "#5d399b": "#c9561f",  # folder back    -> darker magma
+    "#2c1e44": "#3d1c0d",  # glyph on front -> very dark magma/obsidian-ish
+}
+
+def parse_hex(h):
+    h = h.lower().lstrip("#")
+    if len(h) in (3, 4):
+        h = "".join(c * 2 for c in h)
+    return tuple(int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+
+def to_hex(rgb):
+    return "#%02x%02x%02x" % tuple(round(max(0, min(1, c)) * 255) for c in rgb)
+
+def is_violet(h):
+    r, g, b = parse_hex(h)
+    hh, l, s = colorsys.rgb_to_hls(r, g, b)
+    return 0.65 <= hh <= 0.80 and s >= 0.15   # ~234..288 deg, not grey/white
+
+def swap(h):
+    """Fallback violet -> magma: hue to magma, boost saturation, keep lightness."""
+    r, g, b = parse_hex(h)
+    _, l, s = colorsys.rgb_to_hls(r, g, b)
+    return to_hex(colorsys.hls_to_rgb(MAGMA_HUE, min(1, l + 0.04), min(1, s * 1.8)))
+
+HEX = re.compile(r"#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b")
+
+def recolor(text, seen):
+    def sub(m):
+        h = m.group(0)
+        seen.add(h.lower())
+        if h.lower() in PINNED:
+            return PINNED[h.lower()]
+        return swap(h) if is_violet(h) else h
+    return HEX.sub(sub, text)
+
+# --- index.theme parsing -------------------------------------------------------
+sections, cur = {}, None
+for line in open(os.path.join(src, "index.theme"), encoding="utf-8"):
+    line = line.rstrip("\n")
+    m = re.match(r"\[(.+)\]$", line)
+    if m:
+        cur = m.group(1)
+        sections[cur] = []
+    elif cur and line.strip():
+        sections[cur].append(line)
+
+# (symbolic/ dirs hold recolourable *-symbolic icons: leave those to the shell/GTK)
+places = [d for d in sections if d.endswith("/places") and "symbolic" not in d]
+
+def write(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(data)
+
+populated, counts, seen = [], {}, set()
+TEXT_COLOR = re.compile(r"(\.ColorScheme-Text\s*\{\s*color:\s*)#[0-9a-fA-F]{3,8}")
+FAMILY = re.compile(r"^(folder|inode-directory|user-home|user-desktop)")
+
+for d in sorted(places, key=lambda s: (int(re.match(r"(\d+)", s).group(1)), "@2x" in s)):
+    sdir = os.path.join(src, d)
+    if not os.path.isdir(sdir):
+        continue
+    size = int(re.match(r"(\d+)x", d).group(1))
+    n = 0
+    for fn in sorted(os.listdir(sdir)):
+        if not fn.endswith(".svg"):
+            continue
+        real = os.path.realpath(os.path.join(sdir, fn))
+        rbase = os.path.basename(real)
+        name = fn[:-4]
+        if not os.path.isfile(real):
+            continue
+        if size >= 22:
+            # Violet folder variants: skip names that explicitly ask for violet.
+            if "violet" not in rbase or "violet" in name:
+                continue
+            out = recolor(open(real, encoding="utf-8").read(), seen)
+        else:
+            # Monochrome folder-family icons (16 px): colour ColorScheme-Text.
+            if not (FAMILY.match(name) or FAMILY.match(rbase)):
+                continue
+            text = open(real, encoding="utf-8").read()
+            if not TEXT_COLOR.search(text):
+                continue
+            out = TEXT_COLOR.sub(lambda m: m.group(1) + MAGMA, text)
+        write(os.path.join(dest, d, fn), out)
+        n += 1
+    if n:
+        populated.append(d)
+        counts[d] = n
+
+if not populated:
+    sys.exit("papirus-volcanic: nothing generated (is %s a Papirus theme?)" % src)
+
+# --- index.theme -----------------------------------------------------------------
+idx = [
+    "[Icon Theme]",
+    "Name=Papirus-Dark-Volcanic",
+    "Comment=Papirus-Dark with magma (dark-volcanic palette) folders",
+    "Inherits=Papirus-Dark,breeze-dark,hicolor",
+    "Example=folder",
+    "Directories=" + ",".join(populated),
+    "",
+]
+for d in populated:
+    idx.append("[%s]" % d)
+    idx.extend(sections[d])
+    idx.append("")
+write(os.path.join(dest, "index.theme"), "\n".join(idx))
+
+for d in populated:
+    print("%-22s %4d icons" % (d, counts[d]))
+print("total: %d icons" % sum(counts.values()))
+print("colors encountered in violet sources/mapping:")
+for c in sorted(seen):
+    new = PINNED.get(c, swap(c) if is_violet(c) else c)
+    print("  %s -> %s%s" % (c, new, "" if new != c else " (kept)"))
+PY
+
+gtk-update-icon-cache -f -t "$DEST"
+echo "Built $DEST"

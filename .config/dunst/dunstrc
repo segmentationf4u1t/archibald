@@ -16,7 +16,7 @@
     alignment = left
     icon_position = left
     max_icon_size = 48
-    icon_theme = "Papirus-Dark"
+    icon_theme = "Papirus-Dark-Volcanic"
     enable_recursive_icon_lookup = true
     dmenu = /usr/bin/wofi --dmenu
     mouse_left_click = close_current

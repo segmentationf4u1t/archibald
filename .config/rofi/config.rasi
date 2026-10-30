@@ -1,7 +1,7 @@
 configuration {
     modes:                      "drun,run";
     show-icons:                 true;
-    icon-theme:                 "Papirus-Dark";
+    icon-theme:                 "Papirus-Dark-Volcanic";
     font:                       "JetBrainsMono Nerd Font Propo 12";
     terminal:                   "kitty";
     drun-display-format:        "{name}";
