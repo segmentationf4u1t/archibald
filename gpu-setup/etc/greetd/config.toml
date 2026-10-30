@@ -1,0 +1,13 @@
+# greetd: Quickshell login screen (dark-volcanic) in its own Hyprland, see /etc/greetd/hyprland.lua
+# and /etc/greetd/quickshell. The session itself is started by the greeter: start-hyprland, with
+# /etc/profile and ~/.profile sourced by greetd first.
+# Back to SDDM: systemctl disable greetd && systemctl enable sddm (login on tty2 if this one breaks).
+
+[terminal]
+vt = 1
+
+[default_session]
+# The greeter user's home is "/"; Hyprland and Quickshell need a writable home for state and cache
+# (/var/lib/greetd, created by /etc/tmpfiles.d/greetd-greeter.conf).
+command = "env HOME=/var/lib/greetd start-hyprland -- --config /etc/greetd/hyprland.lua"
+user = "greeter"
