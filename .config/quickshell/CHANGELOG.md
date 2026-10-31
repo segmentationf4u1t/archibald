@@ -17,6 +17,7 @@
 - The Wi-Fi list re-sorts by signal strength 1.5 s after a change instead of on every scan update.
 - The bar renders with Qt Quick's software renderer, which needs much less memory than an OpenGL context per window; set `QT_QUICK_BACKEND` (empty for OpenGL) to override it.
 - The audio dropdown's level meters update at 30 Hz.
+- GPU and process statistics are read in-process by a native module (`native/`, built by `install.sh`) instead of `nvidia-smi` and a shell per sample: the CPU, memory and GPU dropdowns open with less CPU and show data sooner, with one process fewer.
 
 ### Fixed
 

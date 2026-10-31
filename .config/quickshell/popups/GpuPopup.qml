@@ -4,7 +4,7 @@ import qs
 import qs.components
 import qs.services
 
-// One card per GPU (nvidia-smi via SysStats): utilization, history, VRAM, temperature, power, fan.
+// One card per GPU (via SysStats): utilization, history, VRAM, temperature, power, fan.
 Item {
     id: root
 
@@ -184,7 +184,7 @@ Item {
             Layout.topMargin: 6
             Layout.bottomMargin: 6
             horizontalAlignment: Text.AlignHCenter
-            text: I18n.tr("No data from nvidia-smi")
+            text: I18n.tr("No GPU data")
             muted: true
         }
     }

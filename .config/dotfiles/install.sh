@@ -31,8 +31,8 @@ PACKAGES=(
     ttf-jetbrains-mono-nerd noto-fonts papirus-icon-theme adw-gtk-theme
     # shell
     zsh zsh-autosuggestions zsh-syntax-highlighting eza bat fd fzf zoxide
-    # this script, papirus-volcanic
-    git python gtk3
+    # this script, papirus-volcanic, the bar's native module
+    git python gtk3 cmake gcc
 )
 
 # ---- output in the dark-volcanic palette ----
@@ -158,6 +158,12 @@ fc-cache -f "$HOME/.local/share/fonts" >/dev/null && info "font cache (Tabler ic
 bat cache --build >/dev/null && info "bat theme"
 apply_gsettings
 info "GTK dark theme, icons, Nemo, Nemo's terminal"
+
+step "bar"
+qs=$HOME/.config/quickshell
+cmake -S "$qs/native" -B "$qs/native/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
+cmake --build "$qs/native/build" >/dev/null
+info "native module (GPU and process statistics)"
 
 step "services"
 systemctl --user daemon-reload 2>/dev/null || true

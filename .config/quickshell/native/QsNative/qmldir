@@ -1,0 +1,3 @@
+module QsNative
+plugin qsnativeplugin
+classname NativePlugin

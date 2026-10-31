@@ -88,7 +88,7 @@ Singleton {
             // gpu
             "Power draw": "Pobór mocy",
             "Fan": "Wentylator",
-            "No data from nvidia-smi": "Brak danych z nvidia-smi",
+            "No GPU data": "Brak danych GPU",
             // disks
             "Disks": "Dyski",
             "Read %1 · write %2": "Odczyt %1 · zapis %2",
