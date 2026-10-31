@@ -56,3 +56,6 @@
 
 # copies made before edits; history lives in git now
 *.bak-*
+
+# Python bytecode (bench scripts)
+__pycache__/
