@@ -21,3 +21,4 @@
 ### Fixed
 
 - The Bluetooth dropdown no longer repaints continuously while it is open.
+- The launcher and power buttons and the dropdown footer links start their programs again (broken by the switch to the software renderer).
