@@ -80,7 +80,10 @@ hl.on("hyprland.start", function ()
   hl.exec_cmd("dunst")                  -- notifications (also D-Bus activatable as fallback)
   hl.exec_cmd("hyprpaper")              -- wallpaper, config: ~/.config/hypr/hyprpaper.conf
   hl.exec_cmd("hypridle")               -- lock before system sleep (no idle lock/dpms), config: ~/.config/hypr/hypridle.conf
-  hl.exec_cmd("qs")                     -- Quickshell: bar + dropdowns on every output, config: ~/.config/quickshell/
+  -- Quickshell: bar + dropdowns on every output, config: ~/.config/quickshell/. It allocates through
+  -- jemalloc, whose default of 4 arenas per CPU spreads the mostly single-threaded bar over many
+  -- arenas; one arena holds the same work in roughly 40 % less memory at the same CPU cost.
+  hl.exec_cmd("MALLOC_CONF=narenas:1 qs")
 
   -- Bluetooth pairing agent (PIN / passkey prompts): the bar's Bluetooth dropdown pairs through BlueZ
   -- but registers no agent. Its tray icon is hidden by the bar (Icons.hiddenTray). Wi-Fi needs no
