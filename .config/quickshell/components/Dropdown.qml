@@ -116,9 +116,19 @@ PanelWindow {
         color: Theme.popupBg
         border.width: 1
         border.color: Theme.obsidian
+        // Every frame of the fade and of the slide repaints the whole frame (it moves and fades), so
+        // the content is re-rasterized ~13 times per open. While the frame animates it is drawn
+        // through a layer instead: the content is rasterized once and each frame only blends that
+        // image. The layer is switched off one animation frame before the slide comes to rest, so the
+        // popup at rest is rendered exactly as before and the switch does not cost a frame of its own.
+        layer.enabled: fadeAnim.running || (slideAnim.running && Math.round(slide) !== (root.shown ? 0 : -8))
 
-        Behavior on opacity { NumberAnimation { duration: Theme.animFast; easing.type: Easing.OutCubic } }
-        Behavior on slide { NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutCubic } }
+        Behavior on opacity {
+            NumberAnimation { id: fadeAnim; duration: Theme.animFast; easing.type: Easing.OutCubic }
+        }
+        Behavior on slide {
+            NumberAnimation { id: slideAnim; duration: Theme.animNormal; easing.type: Easing.OutCubic }
+        }
 
         Loader {
             id: loader

@@ -18,6 +18,7 @@
 - The bar renders with Qt Quick's software renderer, which needs much less memory than an OpenGL context per window; set `QT_QUICK_BACKEND` (empty for OpenGL) to override it.
 - The audio dropdown's level meters update at 30 Hz.
 - GPU and process statistics are read in-process by a native module (`native/`, built by `install.sh`) instead of `nvidia-smi` and a shell per sample: the CPU, memory and GPU dropdowns open with less CPU and show data sooner, with one process fewer.
+- Opening and closing a dropdown takes less CPU: while it fades and slides, its content is drawn once and blended instead of re-rendered every frame; at rest it is drawn exactly as before.
 
 ### Fixed
 
