@@ -32,8 +32,6 @@ Item {
         width: Math.max(0, Math.floor((parent.width - 6) * (root.total > 0 ? part / root.total : 0)))
         visible: width >= 1
         radius: 4
-
-        Behavior on width { NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutCubic } }
     }
 
     component LegendItem: RowLayout {

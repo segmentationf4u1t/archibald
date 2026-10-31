@@ -34,7 +34,10 @@ Item {
         spacing: 2
 
         Repeater {
-            model: root.workspaces
+            // ScriptModel diffs the array, so delegates survive list changes instead of being rebuilt
+            model: ScriptModel {
+                values: root.workspaces
+            }
 
             delegate: Item {
                 id: slot
@@ -77,7 +80,9 @@ Item {
                     }
 
                     Repeater {
-                        model: slot.windows.slice(0, root.maxIcons)
+                        model: ScriptModel {
+                            values: slot.windows.slice(0, root.maxIcons)
+                        }
 
                         delegate: Glyph {
                             required property HyprlandToplevel modelData

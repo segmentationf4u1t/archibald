@@ -21,21 +21,49 @@ Item {
     }
     readonly property var wiredDev: Networking.devices.values.find(d => d.type === DeviceType.Wired && d.connected) ?? null
 
-    // connected -> known -> signal (10 % buckets, so the list does not jitter) -> name
-    readonly property var networkList: {
-        if (!wifiDev || !Networking.wifiEnabled)
-            return [];
-        return wifiDev.networks.values.filter(n => n.name !== "").sort((a, b) => {
-            if (a.connected !== b.connected)
-                return a.connected ? -1 : 1;
-            if (a.known !== b.known)
-                return a.known ? -1 : 1;
-            const sa = Math.round(a.signalStrength * 10);
-            const sb = Math.round(b.signalStrength * 10);
-            if (sa !== sb)
-                return sb - sa;
-            return a.name.localeCompare(b.name);
-        });
+    // connected -> known -> signal (10 % buckets, so the list does not jitter) -> name.
+    // Kept as a plain property rebuilt by rebuildList(): the sort reads signalStrength of every network,
+    // so as a binding it would re-sort and re-diff the list on every scan update. Instead the cheap keys
+    // below trigger it: structure (names / connected / known) at once, signal buckets debounced.
+    property var networkList: []
+
+    function rebuildList() {
+        let next = [];
+        if (wifiDev && Networking.wifiEnabled) {
+            next = wifiDev.networks.values.filter(n => n.name !== "").sort((a, b) => {
+                if (a.connected !== b.connected)
+                    return a.connected ? -1 : 1;
+                if (a.known !== b.known)
+                    return a.known ? -1 : 1;
+                const sa = Math.round(a.signalStrength * 10);
+                const sb = Math.round(b.signalStrength * 10);
+                if (sa !== sb)
+                    return sb - sa;
+                return a.name.localeCompare(b.name);
+            });
+        }
+        resortTimer.stop();
+        const cur = networkList;
+        if (next.length !== cur.length || next.some((n, i) => n !== cur[i]))
+            networkList = next;
+    }
+
+    // set of networks and their connected / known state: a change updates the list immediately
+    readonly property string listKey: wifiDev && Networking.wifiEnabled
+        ? wifiDev.networks.values.map(n => n.name + "|" + (n.connected ? 1 : 0) + (n.known ? 1 : 0)).join("\n")
+        : ""
+    // signal buckets only: a change re-sorts after resortTimer (a scan reports a stream of small updates)
+    readonly property string signalKey: wifiDev && Networking.wifiEnabled
+        ? wifiDev.networks.values.map(n => Math.round(n.signalStrength * 10)).join()
+        : ""
+
+    onListKeyChanged: rebuildList()
+    onSignalKeyChanged: resortTimer.restart()
+
+    Timer {
+        id: resortTimer
+        interval: 1500
+        onTriggered: root.rebuildList()
     }
     readonly property var activeNet: networkList.find(n => n.connected) ?? null
     readonly property bool anyConnection: activeNet !== null || wiredDev !== null
@@ -124,8 +152,12 @@ Item {
     onWifiDevChanged: {
         releaseScanner();
         acquireScanner();
+        rebuildList();
     }
-    Component.onCompleted: acquireScanner()
+    Component.onCompleted: {
+        rebuildList();
+        acquireScanner();
+    }
     Component.onDestruction: releaseScanner()
 
     // ---- IPv4 lookup (NetworkDevice.address holds the MAC, not the IP) -----------------------

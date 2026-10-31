@@ -15,6 +15,7 @@ Item {
     property int padding: 10
     property bool bold: false
     default property alias extra: row.data
+    readonly property bool hovered: area.containsMouse
 
     signal clicked(var mouse)
     signal wheel(var wheel)

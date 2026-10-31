@@ -10,7 +10,7 @@ import qs
 import qs.components
 import qs.services
 
-// One full-width bar per monitor (capsule ends), dropdowns hang off its modules.
+// One full-width bar per monitor (capsule ends), its dropdown hangs off the module that opened it.
 PanelWindow {
     id: bar
 
@@ -76,6 +76,15 @@ PanelWindow {
     Item {
         focus: true
         Keys.onEscapePressed: bar.openPopup = ""
+    }
+
+    // bench: count the frames this bar window swaps (nothing connected while Perf is off)
+    Connections {
+        target: Perf.enabled ? left.Window.window : null
+
+        function onFrameSwapped() {
+            Perf.count("frames:bar:" + bar.screen?.name);
+        }
     }
 
     PwObjectTracker {
@@ -201,6 +210,7 @@ PanelWindow {
             label: Math.round(SysStats.cpu) + "%"
             iconColor: SysStats.cpu >= 85 ? Theme.fire : Theme.magma
             onClicked: bar.togglePopup("cpu")
+            onHoveredChanged: if (hovered) SysStats.warmProcs()
         }
 
         BarButton {
@@ -210,6 +220,7 @@ PanelWindow {
             label: Math.round(SysStats.mem) + "%"
             iconColor: SysStats.mem >= 85 ? Theme.fire : Theme.magma
             onClicked: bar.togglePopup("memory")
+            onHoveredChanged: if (hovered) SysStats.warmProcs()
         }
 
         BarButton {
@@ -239,14 +250,20 @@ PanelWindow {
         }
     }
 
-    // ---------------------------------------------------------------- dropdowns
-    Dropdown { bar: bar; name: "calendar"; anchorItem: clock; source: Qt.resolvedUrl("../popups/CalendarPopup.qml") }
-    Dropdown { bar: bar; name: "traymenu"; anchorItem: bar.trayMenuAnchor; source: Qt.resolvedUrl("../popups/TrayMenuPopup.qml") }
-    Dropdown { bar: bar; name: "audio"; anchorItem: audioButton; source: Qt.resolvedUrl("../popups/AudioPopup.qml") }
-    Dropdown { bar: bar; name: "bluetooth"; anchorItem: bluetoothButton; source: Qt.resolvedUrl("../popups/BluetoothPopup.qml") }
-    Dropdown { bar: bar; name: "network"; anchorItem: networkButton; source: Qt.resolvedUrl("../popups/NetworkPopup.qml") }
-    Dropdown { bar: bar; name: "cpu"; anchorItem: cpuButton; source: Qt.resolvedUrl("../popups/CpuPopup.qml") }
-    Dropdown { bar: bar; name: "memory"; anchorItem: memoryButton; source: Qt.resolvedUrl("../popups/MemoryPopup.qml") }
-    Dropdown { bar: bar; name: "disk"; anchorItem: diskButton; source: Qt.resolvedUrl("../popups/DiskPopup.qml") }
-    Dropdown { bar: bar; name: "gpu"; anchorItem: gpuButton; source: Qt.resolvedUrl("../popups/GpuPopup.qml") }
+    // ---------------------------------------------------------------- dropdown
+    // One window shows whichever popup openPopup names, under that popup's anchor.
+    Dropdown {
+        bar: bar
+        popups: ({
+            calendar: {source: Qt.resolvedUrl("../popups/CalendarPopup.qml"), anchor: clock},
+            traymenu: {source: Qt.resolvedUrl("../popups/TrayMenuPopup.qml"), anchor: bar.trayMenuAnchor},
+            audio: {source: Qt.resolvedUrl("../popups/AudioPopup.qml"), anchor: audioButton},
+            bluetooth: {source: Qt.resolvedUrl("../popups/BluetoothPopup.qml"), anchor: bluetoothButton},
+            network: {source: Qt.resolvedUrl("../popups/NetworkPopup.qml"), anchor: networkButton},
+            cpu: {source: Qt.resolvedUrl("../popups/CpuPopup.qml"), anchor: cpuButton},
+            memory: {source: Qt.resolvedUrl("../popups/MemoryPopup.qml"), anchor: memoryButton},
+            disk: {source: Qt.resolvedUrl("../popups/DiskPopup.qml"), anchor: diskButton},
+            gpu: {source: Qt.resolvedUrl("../popups/GpuPopup.qml"), anchor: gpuButton}
+        })
+    }
 }

@@ -20,7 +20,10 @@ Row {
     rightPadding: 6
 
     Repeater {
-        model: SystemTray.items.values.filter(item => !Icons.hiddenTray.includes(item.id))
+        // ScriptModel diffs the array, so delegates survive list changes instead of being rebuilt
+        model: ScriptModel {
+            values: SystemTray.items.values.filter(item => !Icons.hiddenTray.includes(item.id))
+        }
 
         delegate: Item {
             id: slot
@@ -54,24 +57,33 @@ Row {
             }
 
             // unknown app: its own icon in grayscale, tinted with the text color (a flat silhouette would
-            // turn round app icons into blank discs)
-            IconImage {
-                id: ownIcon
+            // turn round app icons into blank discs). Only instantiated for items without a Tabler glyph,
+            // so known items create neither the image nor the effect.
+            Loader {
                 anchors.centerIn: parent
-                implicitSize: 18
-                visible: false
-                source: slot.glyph === "" ? slot.modelData.icon : ""
-            }
+                active: slot.glyph === ""
+                sourceComponent: Item {
+                    implicitWidth: 18
+                    implicitHeight: 18
 
-            MultiEffect {
-                anchors.fill: ownIcon
-                visible: slot.glyph === ""
-                source: ownIcon
-                brightness: 0.15
-                saturation: -1.0
-                colorization: 1.0
-                colorizationColor: Theme.magma
-                opacity: slot.iconOpacity
+                    IconImage {
+                        id: ownIcon
+                        anchors.fill: parent
+                        implicitSize: 18
+                        visible: false
+                        source: slot.modelData.icon
+                    }
+
+                    MultiEffect {
+                        anchors.fill: parent
+                        source: ownIcon
+                        brightness: 0.15
+                        saturation: -1.0
+                        colorization: 1.0
+                        colorizationColor: Theme.magma
+                        opacity: slot.iconOpacity
+                    }
+                }
             }
 
             MouseArea {

@@ -4,7 +4,9 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Hyprland
 import qs.bar
+import qs
 import qs.screenshot
+import qs.services
 
 ShellRoot {
     Variants {
@@ -27,6 +29,34 @@ ShellRoot {
         function close(): void {
             for (const bar of bars.instances)
                 bar.openPopup = "";
+        }
+    }
+
+    // qs ipc call perf <enable|disable|report|warm|cold>   (bench instrumentation, see Perf.qml)
+    IpcHandler {
+        target: "perf"
+
+        function enable(): void {
+            Perf.setEnabled(true);
+        }
+
+        function disable(): void {
+            Perf.setEnabled(false);
+        }
+
+        // log the frame counters collected since the last report
+        function report(): void {
+            Perf.report();
+        }
+
+        // what hovering the CPU/memory bar module does
+        function warm(): void {
+            SysStats.warmProcs();
+        }
+
+        // forget the previous process sample
+        function cold(): void {
+            SysStats.resetProcs();
         }
     }
 

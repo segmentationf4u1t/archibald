@@ -7,6 +7,7 @@ Rectangle {
 
     property real value: 0
     property color fillColor: Theme.magma
+    property bool animated: false
 
     implicitWidth: 120
     implicitHeight: 6
@@ -19,6 +20,10 @@ Rectangle {
         radius: parent.radius
         color: root.fillColor
 
-        Behavior on width { NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutCubic } }
+        // only animate when the value is user-driven; data meters jump to each sample
+        Behavior on width {
+            enabled: root.animated
+            NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutCubic }
+        }
     }
 }

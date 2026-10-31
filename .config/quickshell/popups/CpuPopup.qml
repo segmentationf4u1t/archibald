@@ -12,7 +12,6 @@ Item {
 
     property var dropdown
 
-    property string model: ""
     // hybrid CPUs list their P-core threads in sysfs ("0-15"); anything else = one group
     property int pThreads: -1
 
@@ -37,15 +36,6 @@ Item {
 
     Component.onCompleted: SysStats.cpuDetailUsers++
     Component.onDestruction: SysStats.cpuDetailUsers--
-
-    FileView {
-        path: "/proc/cpuinfo"
-        onLoaded: {
-            const m = /^model name\s*:\s*(.+)$/m.exec(text());
-            if (m)
-                root.model = m[1].replace(/\((R|TM)\)/g, "").replace(/\s+CPU\b.*$/, "").replace(/\s+/g, " ").trim();
-        }
-    }
 
     FileView {
         path: "/sys/devices/cpu_core/cpus"
@@ -74,8 +64,6 @@ Item {
             height: Math.max(2, parent.height * Math.max(0, Math.min(1, value)))
             radius: 3
             color: Theme.heat(value)
-
-            Behavior on height { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
         }
     }
 
@@ -115,7 +103,7 @@ Item {
                 }
                 Label {
                     Layout.fillWidth: true
-                    text: root.model !== "" ? root.model : "…"
+                    text: SysStats.cpuModel !== "" ? SysStats.cpuModel : "…"
                     small: true
                     muted: true
                 }

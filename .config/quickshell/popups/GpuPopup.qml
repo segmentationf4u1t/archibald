@@ -17,6 +17,9 @@ Item {
     implicitWidth: 400
     implicitHeight: col.implicitHeight
 
+    Component.onCompleted: SysStats.gpuDetailUsers++
+    Component.onDestruction: SysStats.gpuDetailUsers--
+
     ColumnLayout {
         id: col
 

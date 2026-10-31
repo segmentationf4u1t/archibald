@@ -1,0 +1,768 @@
+#!/usr/bin/env python3
+"""Isolated, invisible environment for benchmarking the Quickshell bar.
+
+Stack (nothing ever touches the live desktop):
+
+    bwrap (allowlist /dev, no system bus)                            ]  scope qs-bench-comp
+      └─ cage (wlroots headless backend, 1920x1080@60, GPU-rendered) ]
+           └─ Hyprland (aquamarine wayland backend, nested in cage)  ]
+    quickshell -p <config dir>                                          scope qs-bench-shell
+    dbus-daemon (private session bus, no activation)                    scope qs-bench-bus
+
+* a private XDG_RUNTIME_DIR holds every socket (wayland, hypr, quickshell, dbus), so the
+  user's `qs` / `hyprctl` / `quickshell ipc` never see the bench instances and vice versa;
+  PipeWire and Pulse are reached through symlinks to the host sockets, BlueZ/NetworkManager
+  through the system bus as usual;
+* the compositor can not reach the real display: every compositor process runs in a bwrap mount
+  namespace with a fresh /dev holding only the render node, the NVIDIA nodes it needs and /dev/shm
+  (no /dev/dri/card*, /dev/input, /dev/tty<N>, /dev/console), without the system bus, and with a
+  libseat that can never open a seat (no DRM backend). `start` re-checks that from inside the
+  exact sandbox (`ls /dev /dev/dri`) and refuses to go on if anything else is visible;
+* three transient user scopes make cpu.stat / memory.current of the compositor and of
+  Quickshell separately readable, and `--cpus` pins all of them (QS_BENCH_LIMITS adds scope
+  properties such as CPUQuota/MemoryMax/RuntimeMaxSec for risky experiments, never for measurements).
+
+Usage:
+    env start [--config DIR] [--qs-debug PORT] [--cpus LIST]   start everything, print state JSON
+    env exec -- CMD...                                         run CMD inside the bench environment
+    env restart-qs [--config DIR] [--qs-debug PORT]            relaunch only Quickshell (same scope)
+    env status                                                 print state JSON (exit 1 when not running)
+    env stop                                                   tear everything down
+"""
+import argparse
+import glob
+import json
+import os
+import re
+import shutil
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+DEFAULT_CONFIG = os.path.expanduser("~/.config/quickshell")
+HYPR_CONFIG = os.path.join(HERE, "hyprland-bench.lua")
+SHIM_SRC = os.path.join(HERE, "env-shim.c")
+
+UID = os.getuid()
+# The host runtime dir. Inside `env exec` XDG_RUNTIME_DIR is the private one, so it is exported
+# separately for nested invocations of this script.
+HOST_RT = (os.environ.get("QS_BENCH_HOST_XDG_RUNTIME_DIR")
+           or os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{UID}")
+STATE_DIR = f"{HOST_RT}/qs-bench"                      # state.json, logs, bus config, shims
+STATE_FILE = f"{STATE_DIR}/state.json"
+# Private runtime dir. Kept short on purpose: <rt>/hypr/<sig>/.socket2.sock must fit the
+# 107 byte AF_UNIX path limit (the signature alone is ~62 characters).
+RT_DIR = f"{HOST_RT}/qsb"
+BUS_SOCKET = f"{RT_DIR}/bus"
+RENDER_NODE = "/dev/dri/renderD128"                    # GPU the nested compositor renders on
+HOST_MODE = (1920, 1080, 60000)                        # cage's headless output: w, h, refresh in mHz
+
+UNIT_BUS, UNIT_COMP, UNIT_SHELL = "qs-bench-bus", "qs-bench-comp", "qs-bench-shell"
+ALL_UNITS = (UNIT_SHELL, UNIT_COMP, UNIT_BUS)          # stop order: clients first
+
+# Variables of the live session that must never leak into the bench processes. With XDG_SESSION_ID,
+# libseat's logind backend can take control of that login session; when the bench compositor exits,
+# logind restores the session's VT to text mode, under any desktop running on the same VT. The
+# sandbox also hides the system bus.
+SCRUB = ("WAYLAND_DISPLAY", "WAYLAND_SOCKET", "HYPRLAND_INSTANCE_SIGNATURE", "HYPRLAND_CMD",
+         "HL_INITIAL_WORKSPACE_TOKEN", "DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "AQ_DRM_DEVICES",
+         "AQ_BACKENDS", "WLR_BACKENDS", "WLR_DRM_DEVICES", "QS_CONFIG_PATH", "QS_CONFIG_NAME",
+         "QS_MANIFEST", "SWAYSOCK", "I3SOCK", "LD_PRELOAD", "XDG_SESSION_ID", "XDG_SEAT", "XDG_VTNR")
+
+# Contract fields printed by start / restart-qs / status (state.json may carry more).
+PUBLIC_KEYS = ("state_dir", "qs_pid", "hypr_sig", "wayland_display", "xdg_runtime_dir",
+               "dbus_address", "shell_cgroup", "compositor_cgroup", "qs_startup_ms",
+               "qs_debug_port", "config_dir", "monitor")
+
+BUS_CONF = """<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <keep_umask/>
+  <listen>unix:path=@BUS_SOCKET@</listen>
+  <auth>EXTERNAL</auth>
+  <!-- no service directories: nothing gets bus-activated (portals, gvfs, dconf, ...) -->
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+"""
+
+
+class EnvError(Exception):
+    pass
+
+
+def now():
+    return time.monotonic()
+
+
+def log(msg):
+    print(f"env: {msg}", file=sys.stderr)
+
+
+# --------------------------------------------------------------------------- state
+
+def read_state():
+    try:
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def write_state(state):
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, STATE_FILE)                        # readers never see a half-written file
+
+
+def public(state):
+    return {k: state.get(k) for k in PUBLIC_KEYS}
+
+
+def clean_env():
+    """The host environment minus everything that points at the live session."""
+    return {k: v for k, v in os.environ.items() if k not in SCRUB}
+
+
+def bench_env(state):
+    """The environment every bench client runs in (host environment, scrubbed, plus bench vars)."""
+    env = clean_env()
+    env.update(
+        XDG_RUNTIME_DIR=state["xdg_runtime_dir"],
+        WAYLAND_DISPLAY=state["wayland_display"],
+        HYPRLAND_INSTANCE_SIGNATURE=state["hypr_sig"],
+        DBUS_SESSION_BUS_ADDRESS=state["dbus_address"],
+        QS_BENCH_HOST_XDG_RUNTIME_DIR=HOST_RT,
+    )
+    return env
+
+
+def resolve_config(path):
+    path = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isfile(os.path.join(path, "shell.qml")):
+        raise EnvError(f"--config: no shell.qml in {path}")
+    return path
+
+
+# --------------------------------------------------------------------------- systemd scopes
+
+def cpuset_delegated():
+    """True when scopes under app.slice may use AllowedCPUs= (cpuset controller delegated)."""
+    try:
+        with open(f"/sys/fs/cgroup/user.slice/user-{UID}.slice/user@{UID}.service/"
+                  "app.slice/cgroup.controllers") as f:
+            return "cpuset" in f.read().split()
+    except OSError:
+        return False
+
+
+def check_cpus(cpus):
+    if cpus and not re.fullmatch(r"\d+(-\d+)?(,\d+(-\d+)?)*", cpus):
+        raise EnvError(f"--cpus: bad CPU list {cpus!r} (expected e.g. 0-3,8)")
+
+
+def start_scope(unit, argv, log_path, cpus, env, prefix=()):
+    """Run argv in a new transient user scope; returns the Popen of systemd-run, which execs into
+    the command inside the scope (so its pid is the command's pid). systemd-run itself keeps the
+    host environment (it must reach the *user manager*); the command gets `env` through an
+    `env -i` prefix. `prefix` (e.g. the bwrap sandbox) goes in front of it.
+    QS_BENCH_LIMITS="CPUQuota=200% MemoryMax=2G RuntimeMaxSec=90" adds scope properties (a safety
+    net for experiments; never set for real measurements)."""
+    cmd = ["systemd-run", "--user", "--scope", "--collect", f"--unit={unit}",
+           f"--description=Quickshell benchmark: {unit}", "-p", "TimeoutStopSec=5s"]
+    for prop in os.environ.get("QS_BENCH_LIMITS", "").split():
+        cmd += ["-p", prop]
+    inner = ["env", "-i"] + [f"{k}={v}" for k, v in env.items()]
+    if cpus:
+        if cpuset_delegated():
+            cmd += ["-p", f"AllowedCPUs={cpus}"]
+        else:
+            inner += ["taskset", "-c", cpus]
+    with open(log_path, "ab") as out:
+        return subprocess.Popen(cmd + ["--"] + list(prefix) + inner + list(argv),
+                                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+
+
+def scope_cgroup(pid, unit, timeout=10):
+    """Absolute /sys/fs/cgroup path of the scope `unit` once `pid` has been moved into it."""
+    deadline = now() + timeout
+    while now() < deadline:
+        try:
+            with open(f"/proc/{pid}/cgroup") as f:
+                rel = f.read().strip().split("::", 1)[-1]
+        except OSError:
+            raise EnvError(f"{unit}: process {pid} exited before entering its scope")
+        if rel.endswith(f"/{unit}.scope"):
+            return f"/sys/fs/cgroup{rel}"
+        time.sleep(0.005)
+    raise EnvError(f"{unit}: scope cgroup not found for pid {pid}")
+
+
+def scope_exists(unit):
+    r = subprocess.run(["systemctl", "--user", "is-active", f"{unit}.scope"],
+                       capture_output=True, text=True)
+    return r.stdout.strip() in ("active", "activating", "deactivating")
+
+
+def stop_scope(unit, cgroup=None, timeout=10):
+    """Stop a scope (SIGTERM, 5 s TimeoutStopSec, then SIGKILL) and wait until its cgroup is gone."""
+    if scope_exists(unit):
+        subprocess.run(["systemctl", "--user", "stop", f"{unit}.scope"],
+                       capture_output=True, timeout=timeout + 10)
+    deadline = now() + timeout
+    while cgroup and os.path.isdir(cgroup) and now() < deadline:
+        time.sleep(0.01)
+    if cgroup and os.path.isdir(cgroup):                # still there: hard kill, then wait again
+        try:
+            with open(f"{cgroup}/cgroup.kill", "w") as f:
+                f.write("1")
+        except OSError:
+            pass
+        deadline = now() + timeout
+        while os.path.isdir(cgroup) and now() < deadline:
+            time.sleep(0.01)
+        if os.path.isdir(cgroup):
+            raise EnvError(f"{unit}: cgroup {cgroup} did not go away")
+    subprocess.run(["systemctl", "--user", "reset-failed", f"{unit}.scope"], capture_output=True)
+
+
+# --------------------------------------------------------------------------- hyprctl
+
+def hyprctl(state_or_sig, *args, timeout=5):
+    """hyprctl against the nested instance; returns parsed JSON (or text for non -j calls)."""
+    if isinstance(state_or_sig, dict):
+        sig, rt = state_or_sig["hypr_sig"], state_or_sig["xdg_runtime_dir"]
+    else:
+        sig, rt = state_or_sig, RT_DIR
+    env = clean_env()
+    env["XDG_RUNTIME_DIR"] = rt
+    r = subprocess.run(["hyprctl", "-i", sig, *args], capture_output=True, text=True,
+                       env=env, timeout=timeout)
+    if r.returncode != 0:
+        raise EnvError(f"hyprctl {' '.join(args)}: {r.stderr.strip() or r.stdout.strip()}")
+    return json.loads(r.stdout) if "-j" in args else r.stdout
+
+
+def tail(path, n=25):
+    try:
+        with open(path, errors="replace") as f:
+            return "".join(f.readlines()[-n:])
+    except OSError:
+        return ""
+
+
+# --------------------------------------------------------------------------- tiny Wayland client
+# cage is a kiosk host: nobody tells it to show 1920x1080, and with no input device it never sends
+# the nested Hyprland another event after the initial burst, which leaves aquamarine's first
+# requests (its toplevel) unflushed forever (no output ever appears). Two raw wire-protocol
+# conversations with cage fix both: wlr-output-management sets the headless output's mode, and a
+# wlr-virtual-pointer gives the seat a pointer, whose capability event wakes Hyprland up.
+
+def _wl_msg(obj, op, payload=b""):
+    return struct.pack("<IHH", obj, op, 8 + len(payload)) + payload
+
+
+def _wl_str(s):
+    b = s.encode() + b"\0"
+    return struct.pack("<I", len(b)) + b + b"\0" * (-len(b) % 4)
+
+
+def _wl_read_str(p, off):
+    n = struct.unpack_from("<I", p, off)[0]
+    return p[off + 4:off + 4 + n - 1].decode(errors="replace"), off + 4 + ((n + 3) & ~3)
+
+
+class WlClient:
+    """Just enough Wayland to bind a global and exchange requests/events (no fds, no shm)."""
+
+    def __init__(self, path):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(path)
+        self.buf = b""
+        self.next_id = 2
+        self.registry = self.new_id()
+        self.send(1, 1, struct.pack("<I", self.registry))          # wl_display.get_registry
+        self.globals = {}
+        cb = self.new_id()
+        self.send(1, 0, struct.pack("<I", cb))                      # wl_display.sync
+        for obj, op, p in self.read_until(lambda o, op_: o == cb and op_ == 0):
+            if obj == self.registry and op == 0:                    # wl_registry.global
+                name = struct.unpack_from("<I", p)[0]
+                iface, off = _wl_read_str(p, 4)
+                self.globals[iface] = (name, struct.unpack_from("<I", p, off)[0])
+
+    def new_id(self):
+        self.next_id += 1
+        return self.next_id - 1
+
+    def send(self, obj, op, payload=b""):
+        self.sock.sendall(_wl_msg(obj, op, payload))
+
+    def bind(self, iface, max_version):
+        if iface not in self.globals:
+            raise EnvError(f"cage does not offer {iface}")
+        name, ver = self.globals[iface]
+        obj = self.new_id()
+        self.send(self.registry, 0, struct.pack("<I", name) + _wl_str(iface)
+                  + struct.pack("<II", min(ver, max_version), obj))
+        return obj
+
+    def read_until(self, stop, timeout=3.0):
+        """Events (obj, opcode, payload) up to and including the first one for which stop(obj, op)."""
+        events = []
+        deadline = now() + timeout
+        while True:
+            while len(self.buf) >= 8:
+                obj, opsz = struct.unpack_from("<II", self.buf)
+                size = opsz >> 16
+                if len(self.buf) < size:
+                    break
+                events.append((obj, opsz & 0xffff, self.buf[8:size]))
+                self.buf = self.buf[size:]
+                if stop(obj, opsz & 0xffff):
+                    return events
+            left = deadline - now()
+            if left <= 0:
+                raise EnvError("cage did not answer on its wayland socket")
+            self.sock.settimeout(left)
+            try:
+                data = self.sock.recv(65536)
+            except socket.timeout:
+                continue
+            if not data:
+                raise EnvError("cage closed its wayland socket")
+            self.buf += data
+
+    def close(self):
+        self.sock.close()
+
+
+def set_host_mode(path, width, height, refresh_mhz):
+    """Give cage's (single) headless output a custom mode via wlr-output-management."""
+    c = WlClient(path)
+    try:
+        mgr = c.bind("zwlr_output_manager_v1", 4)
+        heads, serial = [], None
+        for obj, op, p in c.read_until(lambda o, op_: o == mgr and op_ == 1):   # up to .done
+            if obj == mgr and op == 0:
+                heads.append(struct.unpack_from("<I", p)[0])
+            elif obj == mgr and op == 1:
+                serial = struct.unpack_from("<I", p)[0]
+        if not heads:
+            raise EnvError("cage reports no output")
+        cfg, head_cfg = c.new_id(), c.new_id()
+        c.send(mgr, 0, struct.pack("<II", cfg, serial))                          # create_configuration
+        c.send(cfg, 0, struct.pack("<II", head_cfg, heads[0]))                   # enable_head
+        c.send(head_cfg, 1, struct.pack("<iii", width, height, refresh_mhz))     # set_custom_mode
+        c.send(cfg, 2)                                                           # apply
+        events = c.read_until(lambda o, op_: o == cfg and op_ in (0, 1, 2))
+        if events[-1][1] != 0:
+            raise EnvError("cage refused the output mode")
+    finally:
+        c.close()
+
+
+def wake_host(path):
+    """Plug a virtual pointer into cage's seat and unplug it again (by disconnecting): both send
+    the nested Hyprland a wl_seat capabilities event, which makes it dispatch and flush."""
+    c = WlClient(path)
+    try:
+        mgr = c.bind("zwlr_virtual_pointer_manager_v1", 1)
+        c.send(mgr, 0, struct.pack("<II", 0, c.new_id()))                        # create_virtual_pointer(null seat)
+        cb = c.new_id()
+        c.send(1, 0, struct.pack("<I", cb))                                      # sync: cage has handled it
+        c.read_until(lambda o, op_: o == cb and op_ == 0)
+    finally:
+        c.close()
+
+
+# --------------------------------------------------------------------------- bench pieces
+
+def start_bus(cpus):
+    """Private session bus. Returns (address, scope cgroup)."""
+    conf = f"{STATE_DIR}/bus.conf"
+    with open(conf, "w") as f:
+        f.write(BUS_CONF.replace("@BUS_SOCKET@", BUS_SOCKET))
+    proc = start_scope(UNIT_BUS, ["dbus-daemon", f"--config-file={conf}", "--nofork", "--nopidfile"],
+                       f"{STATE_DIR}/dbus.log", cpus, clean_env())
+    cg = scope_cgroup(proc.pid, UNIT_BUS)
+    deadline = now() + 10
+    while not os.path.exists(BUS_SOCKET):
+        if proc.poll() is not None or now() > deadline:
+            raise EnvError("dbus-daemon did not come up:\n" + tail(f"{STATE_DIR}/dbus.log"))
+        time.sleep(0.005)
+    return f"unix:path={BUS_SOCKET}", cg
+
+
+def build_shims():
+    """Compile env-shim.c (cage/aquamarine/NVIDIA workarounds) into the state dir, once per role.
+    Returns (cage shim, hyprland shim)."""
+    cc = shutil.which("gcc") or shutil.which("cc")
+    if not cc:
+        raise EnvError("a C compiler (gcc) is needed to build bench/env-shim.c")
+    paths = []
+    for role, define in (("cage", "SHIM_CAGE"), ("hypr", "SHIM_HYPRLAND")):
+        out = f"{STATE_DIR}/env-shim-{role}.so"
+        cflags = []
+        if role == "cage":                             # struct wlr_xdg_surface comes from wlroots' headers
+            pc = subprocess.run(["pkg-config", "--cflags", "wlroots-0.20", "wayland-server", "pixman-1"],
+                                capture_output=True, text=True)
+            if pc.returncode != 0:
+                raise EnvError("wlroots-0.20 dev headers not found (pkg-config): " + pc.stderr.strip())
+            cflags = pc.stdout.split()
+        r = subprocess.run([cc, "-shared", "-fPIC", "-O2", f"-D{define}", *cflags, "-o", out, SHIM_SRC, "-ldl"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise EnvError("building env-shim.c failed:\n" + r.stderr)
+        paths.append(out)
+    return tuple(paths)
+
+
+def nvidia_nodes(render_node):
+    """The /dev/nvidia* nodes a render on `render_node` needs: control nodes plus its own GPU."""
+    nodes = ["/dev/nvidiactl", "/dev/nvidia-modeset", "/dev/nvidia-uvm", "/dev/nvidia-uvm-tools"]
+    try:                                               # renderD128 -> PCI address -> "Device Minor"
+        pci = os.path.basename(os.path.realpath(f"/sys/class/drm/{os.path.basename(render_node)}/device"))
+        with open(f"/proc/driver/nvidia/gpus/{pci}/information") as f:
+            nodes.append("/dev/nvidia" + re.search(r"Device Minor:\s*(\d+)", f.read()).group(1))
+    except (OSError, AttributeError):
+        nodes += sorted(glob.glob("/dev/nvidia[0-9]*"))   # cannot tell which: allow every GPU
+    return [n for n in nodes if os.path.exists(n)]
+
+
+def sandbox_prefix():
+    """bwrap argv for every compositor process (cage, Hyprland): same filesystem, but a fresh /dev
+    with an allowlist (the render node, the NVIDIA nodes it needs, /dev/shm) and no system bus.
+    Whatever the stack tries, it can reach neither a real monitor (no /dev/dri/card*), nor the real
+    keyboard/mouse (no /dev/input), nor the VTs (no /dev/tty<N>, /dev/console), nor logind/seatd.
+    Without bubblewrap we refuse to start."""
+    bwrap = shutil.which("bwrap")
+    if not bwrap:
+        raise EnvError("bubblewrap (bwrap) is required to keep the nested compositor off the real display")
+    argv = [bwrap, "--bind", "/", "/", "--dev", "/dev"]
+    for node in [RENDER_NODE, *nvidia_nodes(RENDER_NODE)]:
+        if os.path.exists(node):
+            argv += ["--dev-bind", node, node]
+    return argv + ["--bind", "/dev/shm", "/dev/shm", "--tmpfs", "/run/dbus"]
+
+
+def check_sandbox(prefix):
+    """Preflight, in the exact sandbox the compositor will get: refuse to go on when anything that
+    could reach the real display, input, VTs or the system bus is visible."""
+    r = subprocess.run(prefix + ["sh", "-c", "ls -A /dev; echo ---; ls -A /dev/dri; echo ---; "
+                                 "if test -e /run/dbus/system_bus_socket; then echo SYSTEM_BUS; fi"],
+                       capture_output=True, text=True, timeout=20)
+    if r.returncode != 0:
+        raise EnvError("sandbox preflight failed to run: " + r.stderr.strip())
+    dev, dri, bus = (r.stdout.split("---\n") + ["", ""])[:3]
+    bad = [n for n in dev.split() if re.fullmatch(r"input|tty\d+|console|vcs\w*|vga\w*|fb\d+|snd|mem|kmem|port|kmsg", n)]
+    bad += [f"dri/{n}" for n in dri.split() if not n.startswith("renderD")]
+    if "SYSTEM_BUS" in bus:
+        bad.append("system bus")
+    if bad:
+        raise EnvError(f"sandbox preflight: refusing to start, visible inside the sandbox: {bad}")
+
+
+def start_compositor(cpus, address, shims):
+    """cage (headless, GPU-rendered) hosting a nested Hyprland. Returns (cgroup, sig, display)."""
+    env = clean_env()
+    env.update(
+        XDG_RUNTIME_DIR=RT_DIR,
+        DBUS_SESSION_BUS_ADDRESS=address,
+        LD_PRELOAD=shims[0],                           # cage only; Hyprland gets its own below
+        WLR_BACKENDS="headless",                       # one headless output, nothing shown anywhere
+        WLR_LIBINPUT_NO_DEVICES="1",
+        WLR_RENDERER="gles2",
+        LIBSEAT_BACKEND="seatd",                       # a seat that can never be opened:
+        SEATD_SOCK=f"{RT_DIR}/no-seatd",               #   Hyprland's DRM backend fails, as intended
+        HYPRLAND_NO_CRASHREPORTER="1",                 # no reports into the user's ~/.cache/hyprland
+        HYPRLAND_NO_SD_VARS="1",                       # never touch the user manager's environment
+        HYPRLAND_NO_SD_NOTIFY="1",
+    )
+    if os.path.exists(RENDER_NODE):
+        env["WLR_RENDER_DRM_DEVICE"] = RENDER_NODE
+    # cage's client: record the display cage hands out, then become Hyprland. Hyprland opens its
+    # own socket next to it; the one that is not cage's is what clients of the nested Hyprland use.
+    client = ["sh", "-c", 'echo "$WAYLAND_DISPLAY" > "$XDG_RUNTIME_DIR/cage-display"; '
+              'export LD_PRELOAD="$1"; exec Hyprland -c "$0"', HYPR_CONFIG, shims[1]]
+    log_path = f"{STATE_DIR}/compositor.log"
+    sandbox = sandbox_prefix()
+    check_sandbox(sandbox)                             # refuse to start if the sandbox leaks anything
+    proc = start_scope(UNIT_COMP, ["cage", "--"] + client, log_path, cpus, env, prefix=sandbox)
+    cg = scope_cgroup(proc.pid, UNIT_COMP)
+    wait_for(lambda: tail(f"{RT_DIR}/cage-display", 1).endswith("\n"),
+             proc, "cage did not start its client", log_path)
+    cage_sock = f"{RT_DIR}/{tail(f'{RT_DIR}/cage-display', 1).strip()}"
+    try:
+        set_host_mode(cage_sock, *HOST_MODE)           # before the nested window exists
+    except (EnvError, OSError) as e:
+        log(f"warning: could not set the host output mode, using cage's default: {e}")
+    sig = wait_nested_output(proc, cage_sock, log_path)
+    return cg, sig, nested_display(os.path.basename(cage_sock))
+
+
+def wait_for(cond, proc, what, log_path, timeout=30):
+    deadline = now() + timeout
+    while not cond():
+        if proc.poll() is not None:
+            raise EnvError(f"compositor exited during startup ({what}):\n" + tail(log_path))
+        if now() > deadline:
+            raise EnvError(f"{what}:\n" + tail(log_path))
+        time.sleep(0.005)
+
+
+def wait_nested_output(proc, cage_sock, log_path):
+    """Hyprland's output is a window in cage, and aquamarine only flushes its first requests
+    (creating that window) when an event arrives from the host, which a quiet headless cage never
+    sends: keep waking it (every ~10 ms) until the output shows up. Returns the instance signature."""
+    deadline = now() + 30
+    sig = None
+    while now() < deadline:
+        if proc.poll() is not None:
+            raise EnvError("compositor exited during startup:\n" + tail(log_path))
+        if sig is None:
+            sigs = os.listdir(f"{RT_DIR}/hypr") if os.path.isdir(f"{RT_DIR}/hypr") else []
+            if len(sigs) == 1 and os.path.exists(f"{RT_DIR}/hypr/{sigs[0]}/.socket.sock"):
+                sig = sigs[0]
+        if sig:
+            try:
+                ready = any(m["width"] > 0 for m in hyprctl(sig, "monitors", "-j"))
+            except (EnvError, subprocess.TimeoutExpired, ValueError):
+                ready = False                          # IPC not answering yet
+            if ready:
+                time.sleep(0.3)                        # a protocol error would be logged by now
+                if "error in client communication" in tail(log_path, 200):
+                    raise EnvError("cage dropped the nested Hyprland's connection:\n" + tail(log_path))
+                return sig
+        wake_host(cage_sock)
+        time.sleep(0.01)
+    raise EnvError("nested Hyprland never got an output:\n" + tail(log_path))
+
+
+def nested_display(cage_display):
+    """Wayland socket of the nested Hyprland: the wayland-N socket that is not cage's."""
+    socks = [n for n in os.listdir(RT_DIR)
+             if re.fullmatch(r"wayland-\d+", n) and n != cage_display]
+    if len(socks) != 1:
+        raise EnvError(f"cannot tell the nested Hyprland's wayland socket (cage={cage_display}, "
+                       f"candidates={socks})")
+    return socks[0]
+
+
+def start_quickshell(state, cpus, qs_debug, config_dir):
+    """Launch Quickshell in the shell scope; returns (pid, cgroup, startup_ms).
+    startup_ms: scope entered (systemd-run's "Running as unit" line, printed just before it execs
+    quickshell) -> quickshell logged "Configuration Loaded"."""
+    log_path = f"{STATE_DIR}/quickshell.log"
+    open(log_path, "wb").close()
+    argv = ["quickshell", "-p", config_dir]
+    if qs_debug is not None:
+        argv += ["--debug", str(qs_debug)]
+    t_spawn = now()
+    proc = start_scope(UNIT_SHELL, argv, log_path, cpus, bench_env(state))
+    cg = scope_cgroup(proc.pid, UNIT_SHELL)
+    t_scope = None
+    seen = b""
+    deadline = now() + 60
+    with open(log_path, "rb") as f:
+        while True:
+            chunk = f.read()
+            t = now()
+            if chunk:
+                first = t_scope is None
+                seen += chunk
+                if first and re.search(rb"Running (scope )?as unit", seen):
+                    t_scope = t
+                if b"Configuration Loaded" in seen:
+                    # both lines in one read = we polled too slowly to timestamp the first one
+                    t0 = t_scope if t_scope is not None and not (first and t_scope == t) else t_spawn
+                    return proc.pid, cg, round((t - t0) * 1000)
+            elif proc.poll() is not None:
+                raise EnvError(f"quickshell exited (rc={proc.returncode}) before loading:\n"
+                               + tail(log_path))
+            elif t > deadline:
+                raise EnvError("quickshell did not log 'Configuration Loaded' in 60 s:\n"
+                               + tail(log_path))
+            else:
+                time.sleep(0.002)
+
+
+def find_bar_layer(state, pid=None):
+    """The qs-bar layer surface (of quickshell `pid`, if given), or None."""
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("namespace") == "qs-bar" and (pid is None or node.get("pid") == pid):
+                return node
+            node = list(node.values())
+        if isinstance(node, list):
+            for v in node:
+                r = walk(v)
+                if r:
+                    return r
+        return None
+    return walk(hyprctl(state, "layers", "-j"))
+
+
+def wait_bar_layer(state, pid, timeout=15):
+    deadline = now() + timeout
+    while now() < deadline:
+        if find_bar_layer(state, pid):
+            return
+        time.sleep(0.01)
+    raise EnvError("quickshell loaded but no qs-bar layer surface appeared in the nested Hyprland:\n"
+                   + tail(f"{STATE_DIR}/quickshell.log"))
+
+
+def monitor_info(state):
+    mons = [m for m in hyprctl(state, "monitors", "-j") if m["width"] > 0]
+    if not mons:
+        raise EnvError("nested Hyprland reports no monitor")
+    m = mons[0]
+    return {"name": m["name"], "width": m["width"], "height": m["height"],
+            "refresh": round(m["refreshRate"], 3)}
+
+
+def teardown(state=None):
+    """Stop every scope this tool may have started and remove all private files."""
+    state = state or {}
+    cgroups = {UNIT_SHELL: state.get("shell_cgroup"), UNIT_COMP: state.get("compositor_cgroup"),
+               UNIT_BUS: state.get("bus_cgroup")}
+    errors = []
+    for unit in ALL_UNITS:
+        try:
+            stop_scope(unit, cgroups[unit])
+        except (EnvError, subprocess.SubprocessError) as e:
+            errors.append(str(e))
+    shutil.rmtree(RT_DIR, ignore_errors=True)          # unlinks the pipewire/pulse symlinks, not targets
+    shutil.rmtree(STATE_DIR, ignore_errors=True)
+    if errors:
+        raise EnvError("; ".join(errors))
+
+
+def scopes_active(units):
+    return all(scope_exists(u) for u in units)
+
+
+# --------------------------------------------------------------------------- commands
+
+def cmd_start(args):
+    check_cpus(args.cpus)
+    config_dir = resolve_config(args.config)
+    state = read_state()
+    if state and scopes_active(ALL_UNITS):
+        raise EnvError("already running (use `env stop` first); state: " + STATE_FILE)
+    teardown(state)                                    # clear leftovers of a crashed run
+
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    os.makedirs(RT_DIR, mode=0o700, exist_ok=True)
+    os.chmod(STATE_DIR, 0o700)
+    os.chmod(RT_DIR, 0o700)
+    for name in ("pipewire-0", "pulse"):               # audio sockets live in the host runtime dir
+        if os.path.exists(f"{HOST_RT}/{name}"):
+            os.symlink(f"{HOST_RT}/{name}", f"{RT_DIR}/{name}")
+
+    state = {"state_dir": STATE_DIR, "xdg_runtime_dir": RT_DIR, "cpus": args.cpus,
+             "qs_debug_port": args.qs_debug, "config_dir": config_dir}
+    try:
+        shims = build_shims()
+        state["dbus_address"], state["bus_cgroup"] = start_bus(args.cpus)
+        (state["compositor_cgroup"], state["hypr_sig"],
+         state["wayland_display"]) = start_compositor(args.cpus, state["dbus_address"], shims)
+        state["monitor"] = monitor_info(state)
+        (state["qs_pid"], state["shell_cgroup"],
+         state["qs_startup_ms"]) = start_quickshell(state, args.cpus, args.qs_debug, config_dir)
+        wait_bar_layer(state, state["qs_pid"])
+    except BaseException:                              # incl. Ctrl-C: never leave a half-started stack
+        try:
+            teardown(state)
+        except EnvError as e:
+            log(f"teardown after failed start: {e}")
+        raise
+    write_state(state)
+    print(json.dumps(public(state)))
+
+
+def cmd_restart_qs(args):
+    state = read_state()
+    if not state or not scopes_active((UNIT_COMP, UNIT_BUS)):
+        raise EnvError("not running")
+    # The config of the running instance is kept unless --config says otherwise.
+    config_dir = resolve_config(args.config or state["config_dir"])
+    stop_scope(UNIT_SHELL, state.get("shell_cgroup"))
+    deadline = now() + 10                              # the old bar's layer must be gone first
+    while find_bar_layer(state) and now() < deadline:
+        time.sleep(0.01)
+    state["qs_debug_port"], state["config_dir"] = args.qs_debug, config_dir
+    state["qs_pid"], state["shell_cgroup"], state["qs_startup_ms"] = start_quickshell(
+        state, state.get("cpus"), args.qs_debug, config_dir)
+    wait_bar_layer(state, state["qs_pid"])
+    write_state(state)
+    print(json.dumps(public(state)))
+
+
+def cmd_status(args):
+    state = read_state()
+    if not state or not scopes_active(ALL_UNITS):
+        print("not running", file=sys.stderr)
+        return 1
+    print(json.dumps(public(state)))
+    return 0
+
+
+def cmd_exec(argv):
+    state = read_state()
+    if not state or not scopes_active(ALL_UNITS):
+        raise EnvError("not running (start it with `env start`)")
+    if argv and argv[0] == "--":
+        argv = argv[1:]
+    if not argv:
+        raise EnvError("exec: no command given")
+    try:
+        os.execvpe(argv[0], argv, bench_env(state))
+    except OSError as e:
+        raise EnvError(f"exec {argv[0]}: {e.strerror}")
+
+
+def cmd_stop(args):
+    teardown(read_state())
+    return 0
+
+
+def main():
+    try:
+        if len(sys.argv) > 1 and sys.argv[1] == "exec":   # everything after `exec` is the command's
+            cmd_exec(sys.argv[2:])
+        ap = argparse.ArgumentParser(prog="env", description=__doc__.split("\n")[0])
+        sub = ap.add_subparsers(dest="cmd_name", required=True)
+        p = sub.add_parser("start", help="start the isolated stack and print the state JSON")
+        p.add_argument("--config", metavar="DIR", default=DEFAULT_CONFIG,
+                       help="quickshell config dir (default: %(default)s)")
+        p.add_argument("--qs-debug", type=int, metavar="PORT", help="quickshell --debug PORT")
+        p.add_argument("--cpus", metavar="LIST", help="pin the whole stack to these CPUs (e.g. 2-5)")
+        p.set_defaults(fn=cmd_start)
+        sub.add_parser("exec", help="run a command inside the bench environment: exec -- CMD...")
+        p = sub.add_parser("restart-qs", help="relaunch only quickshell")
+        p.add_argument("--config", metavar="DIR",
+                       help="quickshell config dir (default: the running instance's)")
+        p.add_argument("--qs-debug", type=int, metavar="PORT")
+        p.set_defaults(fn=cmd_restart_qs)
+        sub.add_parser("status", help="print the state JSON").set_defaults(fn=cmd_status)
+        sub.add_parser("stop", help="tear everything down").set_defaults(fn=cmd_stop)
+        args = ap.parse_args()
+        sys.exit(args.fn(args) or 0)
+    except EnvError as e:
+        print(f"env: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

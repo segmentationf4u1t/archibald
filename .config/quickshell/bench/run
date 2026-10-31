@@ -1,0 +1,833 @@
+#!/usr/bin/env python3
+"""Quickshell bar benchmark driver (stdlib only).
+
+Runs everything inside the isolated environment managed by bench/env (nested Hyprland in a
+headless cage, private D-Bus, own Quickshell instance); never touches the live bar. It only
+talks to that environment through `env start|exec|restart-qs|stop`, to the bench Quickshell
+through `quickshell ipc call ...` (targets "perf" and "bar") and reads the `[perf] ...` lines
+of the instance's stderr log (<state_dir>/quickshell.log, tailed in a background thread for the run).
+
+Phases: startup -> idle -> interactions (one dropdown at a time) -> [profile] -> report.
+Output: ~/.cache/qs-bench/<YYYYmmdd-HHMMSS>[-label].json + .md (+ .qtd with --profile); the markdown
+is also printed to stdout (progress goes to stderr).
+
+usage: bench/run [--iterations N] [--idle S] [--startups N] [--label TEXT] [--cpus LIST] [--keep]
+                 [--config DIR] [--profile SECONDS]
+
+--profile SECONDS (default off, e.g. 20) adds a QML profiling stage AFTER all timing phases, so the
+debugger overhead never touches the timing metrics: the bench Quickshell is relaunched with
+`env restart-qs --qs-debug PORT`, `qmlprofiler --attach` records a fixed workload (SECONDS/2 idle,
+then every dropdown opened and closed once) and the trace is saved as <report-basename>.qtd. Its
+qtd_summary.py --json output is stored under the top-level "profile" key of the run JSON and
+rendered in the markdown (profile numbers are not part of the timing deltas; the previous run's
+self ms is shown beside the top JS / binding / handler entries). Failures of this stage go to
+"errors" and do not abort the timing results.
+"""
+
+import argparse
+import collections
+import datetime
+import json
+import math
+import os
+import re
+import signal
+import subprocess
+import sys
+import shutil
+import socket
+import threading
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+ENV = os.path.join(HERE, "env")
+OUT_DIR = os.path.expanduser("~/.cache/qs-bench")
+
+# plain dropdowns, benchmarked in this order; the cpu variants come last so that
+# "memory" never sees a procs sample left warm by a cpu run
+DROPDOWNS = ["calendar", "audio", "bluetooth", "network", "memory", "disk", "gpu"]
+DATA_DROPDOWNS = {"cpu", "memory", "disk"}  # also emit "[perf] data name=..."
+OPEN_TIMEOUT = 5.0
+KEEP_OPEN = 1.5
+SETTLE = 0.6
+WARM_WAIT = 0.3
+REGRESSION = 10.0  # percent change marked in the delta column
+DELTA_FLOOR = 0.5  # absolute change below which a delta is never marked
+
+PROFILE_DROPDOWNS = ["cpu", "memory", "disk", "network", "audio", "bluetooth", "calendar", "gpu"]
+PROFILE_TOP = 15
+QTD_SUMMARY = os.path.join(HERE, "qtd_summary.py")
+DEFAULT_CONFIG = "~/.config/quickshell"
+PROFILER_ATTACH_TIMEOUT = 20.0
+PROFILER_FLUSH_TIMEOUT = 60.0
+
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+PERF_LINE = re.compile(r"\[perf\] (\w+)(?: (.*))?$")
+KV = re.compile(r"(\w+)=(\S+)")
+
+
+def log(msg):
+    print(f"[bench] {msg}", file=sys.stderr, flush=True)
+
+
+def run_cmd(args, timeout=60, check=True):
+    """Run a command, return CompletedProcess (text). Raises RuntimeError on failure if check."""
+    try:
+        p = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"timeout after {timeout}s: {' '.join(args)}")
+    if check and p.returncode != 0:
+        raise RuntimeError(f"exit {p.returncode}: {' '.join(args)}\n{p.stdout}{p.stderr}")
+    return p
+
+
+def env_json(args, timeout, config=None):
+    """Run `env <args>` (plus `--config DIR` for start/restart-qs) and parse its single JSON line."""
+    if config and args[0] in ("start", "restart-qs"):
+        args = args[:1] + ["--config", config] + args[1:]
+    p = run_cmd([ENV] + args, timeout=timeout)
+    for line in reversed(p.stdout.strip().splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            return json.loads(line)
+    raise RuntimeError(f"no JSON from env {' '.join(args)}: {p.stdout!r}")
+
+
+class LogFollower:
+    """Tails the bench instance's stderr log (env writes it to <state_dir>/quickshell.log and
+    recreates it on every (re)start), collecting parsed [perf] events. Not `quickshell log -f`:
+    in Quickshell 0.3.2 its reader aborts (QThread destroyed while running) when it reaches a
+    .qslog record that is still being written, after which every later wait times out."""
+
+    POLL = 0.005  # s; bounds the added latency of event timestamps
+
+    def __init__(self, log_path):
+        self.events = []  # {"t": monotonic, "kind", "fields": {k: v}, "raw"}
+        self.lines = 0  # all log lines read, for describe()
+        self.tail = collections.deque(maxlen=4)
+        self.cv = threading.Condition()
+        self.file = open(log_path, encoding="utf-8", errors="replace")
+        self.stopping = threading.Event()
+        self.thread = threading.Thread(target=self._read, daemon=True)
+        self.thread.start()
+
+    def _read(self):
+        pending = ""  # a line whose end has not been written yet
+        while not self.stopping.is_set():
+            chunk = self.file.read()
+            if not chunk:
+                time.sleep(self.POLL)
+                continue
+            *complete, pending = (pending + chunk).split("\n")
+            for line in complete:
+                self._line(ANSI.sub("", line).rstrip())
+        with self.cv:  # follower ended: wake waiters so they time out promptly
+            self.cv.notify_all()
+
+    def _line(self, line):
+        with self.cv:
+            self.lines += 1
+            self.tail.append(line[:160])
+        m = PERF_LINE.search(line)
+        if not m:
+            return
+        kind, rest = m.group(1), (m.group(2) or "")
+        if kind == "counters":
+            try:
+                fields = json.loads(rest)
+            except ValueError:
+                return
+        else:
+            fields = dict(KV.findall(rest))
+        with self.cv:
+            self.events.append({"t": time.monotonic(), "kind": kind, "fields": fields, "raw": line.strip()})
+            self.cv.notify_all()
+
+    def alive(self):
+        return self.thread.is_alive()
+
+    def describe(self):
+        """Follower state for error messages (a missing [perf] line is otherwise undiagnosable)."""
+        with self.cv:
+            return (f"log follower {'alive' if self.alive() else 'stopped'}, "
+                    f"{self.lines} lines read, last: {list(self.tail)}")
+
+    def mark(self):
+        with self.cv:
+            return len(self.events)
+
+    def wait(self, since, kind, name=None, timeout=5.0):
+        """First event of `kind` (and fields["name"] == name) at index >= since, or None."""
+        deadline = time.monotonic() + timeout
+        with self.cv:
+            while True:
+                for ev in self.events[since:]:
+                    if ev["kind"] == kind and (name is None or ev["fields"].get("name") == name):
+                        return ev
+                left = deadline - time.monotonic()
+                if left <= 0 or not self.alive():
+                    return None
+                self.cv.wait(min(left, 0.25))
+
+    def between(self, start, end=None):
+        with self.cv:
+            return list(self.events[start:end])
+
+    def close(self):
+        self.stopping.set()
+        self.thread.join(2)
+        self.file.close()
+
+
+class Bench:
+    def __init__(self, args):
+        self.args = args
+        self.info = None  # env JSON
+        self.follower = None
+        self.samples = {}  # key -> {"values": [...], "timeouts": n}
+        self.errors = []
+        self.meta = {}
+        self.config = os.path.abspath(os.path.expanduser(args.config))
+        self.profile = None  # qtd_summary JSON of the profiling stage
+        self.profile_trace = None  # temp .qtd path, moved next to the report by finish_report
+
+    # ---- sample bookkeeping -------------------------------------------------------------
+    def add(self, key, value):
+        self.samples.setdefault(key, {"values": [], "timeouts": 0})["values"].append(value)
+
+    def timeout(self, key):
+        self.samples.setdefault(key, {"values": [], "timeouts": 0})["timeouts"] += 1
+
+    def error(self, msg):
+        log("ERROR: " + msg)
+        self.errors.append(msg)
+
+    # ---- environment ----------------------------------------------------------------------
+    def ipc(self, target, fn, *a):
+        """`quickshell ipc call` against the bench instance; returns True on success."""
+        cmd = [ENV, "exec", "--", "quickshell", "ipc", "--pid", str(self.info["qs_pid"]), "call", target, fn, *a]
+        try:
+            p = run_cmd(cmd, timeout=20, check=False)
+        except RuntimeError as e:
+            self.error(f"ipc {target} {fn}: {e}")
+            return False
+        if p.returncode != 0:
+            self.error(f"ipc {target} {fn} exit {p.returncode}: {(p.stdout + p.stderr).strip()[:200]}")
+            return False
+        return True
+
+    def cpu_usec(self, cgroup):
+        try:
+            with open(os.path.join(cgroup, "cpu.stat")) as f:
+                for line in f:
+                    if line.startswith("usage_usec"):
+                        return int(line.split()[1])
+        except OSError as e:
+            self.error(f"cpu.stat {cgroup}: {e}")
+        return None
+
+    def proc_status(self):
+        pid = self.info["qs_pid"]
+        try:
+            with open(f"/proc/{pid}/status") as f:
+                text = f.read()
+        except OSError:
+            text = run_cmd([ENV, "exec", "--", "cat", f"/proc/{pid}/status"], timeout=20, check=False).stdout
+        out = {}
+        for line in text.splitlines():
+            k, _, v = line.partition(":")
+            if k in ("VmRSS", "VmHWM", "Threads"):
+                out[k] = int(v.split()[0])
+        return out
+
+    def flush(self):
+        """perf report; returns (counters event or None)."""
+        m = self.follower.mark()
+        if not self.ipc("perf", "report"):
+            return None
+        return self.follower.wait(m, "counters", timeout=5.0)
+
+    # ---- phases ----------------------------------------------------------------------------
+    def phase_startup(self):
+        a = self.args
+        cmd = ["start"]
+        if a.cpus:
+            cmd += ["--cpus", a.cpus]
+        log("env start")
+        self.info = env_json(cmd, timeout=180, config=self.config)
+        self.add("startup/qs_startup_ms", self.info["qs_startup_ms"])
+        for i in range(a.startups - 1):
+            log(f"env restart-qs ({i + 2}/{a.startups})")
+            self.info = env_json(["restart-qs"], timeout=180, config=self.config)
+            self.add("startup/qs_startup_ms", self.info["qs_startup_ms"])
+        self.meta["monitor"] = self.info.get("monitor")
+        self.follower = LogFollower(os.path.join(self.info["state_dir"], "quickshell.log"))
+        log("settling 5s")
+        time.sleep(5)
+        m = self.follower.mark()
+        if not self.ipc("perf", "enable") or not self.follower.wait(m, "enabled", timeout=5.0):
+            raise RuntimeError(f"perf enable did not log '[perf] enabled' ({self.follower.describe()})")
+
+    def phase_idle(self):
+        a = self.args
+        log(f"idle {a.idle}s")
+        self.ipc("bar", "close")
+        time.sleep(SETTLE)
+        first = self.flush()
+        if first is None:
+            self.timeout("idle/bar_fps")
+        i0 = self.follower.mark()
+        shell0 = self.cpu_usec(self.info["shell_cgroup"])
+        comp0 = self.cpu_usec(self.info["compositor_cgroup"])
+        w0 = time.monotonic()
+        time.sleep(a.idle)
+        shell1 = self.cpu_usec(self.info["shell_cgroup"])
+        comp1 = self.cpu_usec(self.info["compositor_cgroup"])
+        w1 = time.monotonic()
+        last = self.flush()
+        wall_us = (w1 - w0) * 1e6
+        if shell0 is not None and shell1 is not None:
+            self.add("idle/shell_cpu_pct", round((shell1 - shell0) / wall_us * 100, 2))
+        if comp0 is not None and comp1 is not None:
+            self.add("idle/compositor_cpu_pct", round((comp1 - comp0) / wall_us * 100, 2))
+            self.meta["idle_compositor_included"] = True
+        if shell0 is not None and shell1 is not None:
+            self.meta["idle_shell_cpu_ms_per_s"] = (shell1 - shell0) / 1000 / (w1 - w0)
+        st = self.proc_status()
+        for k, key, div in (("VmRSS", "idle/rss_mb", 1024), ("VmHWM", "idle/hwm_mb", 1024), ("Threads", "idle/threads", 1)):
+            if k in st:
+                self.add(key, round(st[k] / div, 1) if div > 1 else st[k])
+        # bar frames per second per screen, from the counters between the two reports
+        if first is not None and last is not None and last["t"] > first["t"]:
+            dt = last["t"] - first["t"]
+            for k, v in last["fields"].items():
+                if k.startswith("frames:bar:"):
+                    self.add("idle/bar_fps/" + k[len("frames:bar:"):], round(v / dt, 2))
+            # fetches the idle bar did on its own
+            events = self.follower.between(i0)
+            counts = {"procs": 0, "disk": 0}
+            for ev in events:
+                if ev["t"] > last["t"]:
+                    break
+                if ev["kind"] == "fetch":
+                    n = ev["fields"].get("name", "?")
+                    counts[n] = counts.get(n, 0) + 1
+            for n, c in counts.items():
+                self.add(f"idle/fetch_count/{n}", c)
+        else:
+            self.timeout("idle/bar_fps")
+
+    def interact(self, variant, name, mode):
+        """N open/close cycles of dropdown `name`; mode None|"cold"|"warm"."""
+        a = self.args
+        log(f"interaction {variant} x{a.iterations}")
+        self.ipc("bar", "close")
+        time.sleep(SETTLE)
+        want_data = name in DATA_DROPDOWNS
+        idle_rate = self.meta.get("idle_shell_cpu_ms_per_s")
+        total_cpu_us = 0
+        cpu_ok = True
+        for i in range(a.iterations):
+            self.flush()  # reset counters so the report below covers this open only
+            if mode == "cold":
+                self.ipc("perf", "cold")
+            elif mode == "warm":
+                self.ipc("perf", "warm")
+                time.sleep(WARM_WAIT)
+            cpu0 = self.cpu_usec(self.info["shell_cgroup"])
+            w0 = time.monotonic()
+            m = self.follower.mark()
+            ok = self.ipc("bar", "toggle", name)
+            t_toggle = time.monotonic()
+            opened = self.follower.wait(m, "open", name, OPEN_TIMEOUT) if ok else None
+            data = None
+            if want_data and ok:
+                data = self.follower.wait(m, "data", name, max(0.1, OPEN_TIMEOUT - (time.monotonic() - t_toggle)))
+            if opened:
+                try:
+                    self.add(f"{variant}/loaded_ms", float(opened["fields"]["loaded"]))
+                    self.add(f"{variant}/frame_ms", float(opened["fields"]["frame"]))
+                except (KeyError, ValueError):
+                    self.timeout(f"{variant}/loaded_ms")
+                    self.timeout(f"{variant}/frame_ms")
+            else:
+                self.timeout(f"{variant}/loaded_ms")
+                self.timeout(f"{variant}/frame_ms")
+            if want_data:
+                try:
+                    self.add(f"{variant}/data_ms", float(data["fields"]["ms"]))
+                except (TypeError, KeyError, ValueError):
+                    self.timeout(f"{variant}/data_ms")
+            time.sleep(KEEP_OPEN)
+            ctr = self.flush()
+            cpu1 = self.cpu_usec(self.info["shell_cgroup"])
+            w1 = time.monotonic()
+            if ctr is None:
+                self.timeout(f"{variant}/frames")
+                self.timeout(f"{variant}/bar_frames")
+            else:
+                f = ctr["fields"]
+                self.add(f"{variant}/frames", f.get(f"frames:dropdown:{name}", 0))
+                self.add(f"{variant}/bar_frames", sum(v for k, v in f.items() if k.startswith("frames:bar:")))
+            if cpu0 is not None and cpu1 is not None:
+                cpu_ms = (cpu1 - cpu0) / 1000
+                total_cpu_us += cpu1 - cpu0
+                self.add(f"{variant}/cpu_ms_per_open", round(cpu_ms, 1))
+                if idle_rate is not None:
+                    self.add(f"{variant}/cpu_ms_net_of_idle", round(cpu_ms - idle_rate * (w1 - w0), 1))
+            else:
+                cpu_ok = False
+            # fetch timings seen since the toggle (procs / disk)
+            for ev in self.follower.between(m):
+                if ev["kind"] == "fetch":
+                    n = ev["fields"].get("name", "?")
+                    for fld in ("spawn", "parse"):
+                        try:
+                            v = float(ev["fields"][fld])
+                        except (KeyError, ValueError):
+                            continue
+                        self.add(f"{variant}/fetch_{n}_{fld}_ms", v)
+                        self.add(f"fetch/{n}/{fld}_ms", v)
+            self.ipc("bar", "close")
+            time.sleep(SETTLE if opened else SETTLE + 2.0)
+        if cpu_ok:
+            self.add(f"{variant}/cpu_ms_total", round(total_cpu_us / 1000, 1))
+
+    # ---- profiling stage -------------------------------------------------------------------
+    @staticmethod
+    def free_port():
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    @staticmethod
+    def port_listening(port):
+        """True if a TCP socket listens on `port` (read from /proc/net, no connection made: the
+        Qt debug server serves a single client, a probe connect could steal it)."""
+        for fn in ("/proc/net/tcp", "/proc/net/tcp6"):
+            try:
+                with open(fn) as f:
+                    next(f)
+                    for line in f:
+                        cols = line.split()
+                        if len(cols) > 3 and cols[3] == "0A" and int(cols[1].rsplit(":", 1)[1], 16) == port:
+                            return True
+            except (OSError, StopIteration):
+                continue
+        return False
+
+    def phase_profile(self):
+        """Profiled workload; every failure lands in self.errors and never aborts the run."""
+        try:
+            self._profile(self.args.profile)
+        except RuntimeError as e:
+            self.error(f"profile: {e}")
+            try:
+                os.unlink(os.path.join(OUT_DIR, f".profile-{os.getpid()}.qtd"))
+            except OSError:
+                pass
+
+    def _profile(self, secs):
+        log(f"profile stage ({secs:g}s)")
+        port = self.free_port()
+        if self.follower:
+            self.follower.close()
+        self.info = env_json(["restart-qs", "--qs-debug", str(port)], timeout=180, config=self.config)
+        port = int(self.info.get("qs_debug_port") or port)
+        self.follower = LogFollower(os.path.join(self.info["state_dir"], "quickshell.log"))
+        deadline = time.monotonic() + 30
+        while not self.port_listening(port):
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"debug port {port} never listened")
+            time.sleep(0.2)
+        log("settling 3s")
+        time.sleep(3)
+        m = self.follower.mark()
+        if not self.ipc("perf", "enable") or not self.follower.wait(m, "enabled", timeout=5.0):
+            raise RuntimeError(f"perf enable did not log '[perf] enabled' (profiled instance; {self.follower.describe()})")
+
+        os.makedirs(OUT_DIR, exist_ok=True)
+        trace = os.path.join(OUT_DIR, f".profile-{os.getpid()}.qtd")
+        if os.path.exists(trace):
+            os.unlink(trace)
+        exe = shutil.which("qmlprofiler") or "/usr/bin/qmlprofiler"
+        try:
+            proc = subprocess.Popen(
+                [exe, "--attach", "localhost", "--port", str(port), "--interactive", "-o", trace],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+        except OSError as e:
+            raise RuntimeError(f"cannot start qmlprofiler: {e}")
+        out = []  # qmlprofiler output lines
+        cv = threading.Condition()
+
+        def reader():
+            for line in proc.stdout:
+                with cv:
+                    out.append(line.rstrip())
+                    cv.notify_all()
+            with cv:
+                cv.notify_all()
+
+        threading.Thread(target=reader, daemon=True).start()
+
+        def wait_for(pred, timeout):
+            """Poll pred() (lock held for out access) until true, timeout or profiler exit."""
+            end = time.monotonic() + timeout
+            while True:
+                with cv:
+                    if pred():
+                        return True
+                if time.monotonic() >= end or proc.poll() is not None:
+                    with cv:
+                        return pred()
+                time.sleep(0.1)
+
+        def said(needle):
+            return lambda: any(needle in ln.lower() for ln in out)
+
+        def trace_written():
+            """Message seen, or trace file present and not growing for a second."""
+            if said("data written")():
+                return True
+            try:
+                size = os.path.getsize(trace)
+            except OSError:
+                return False
+            if size > 0 and size == last_size[0]:
+                return time.monotonic() - last_size[1] >= 1.0
+            last_size[:] = [size, time.monotonic()]
+            return False
+
+        last_size = [-1, 0.0]
+
+        def send(cmd):
+            try:
+                proc.stdin.write(cmd + "\n")
+                proc.stdin.flush()
+            except (OSError, ValueError):
+                return False
+            return True
+
+        def tail():
+            with cv:
+                return " | ".join(out[-5:])[:300]
+
+        try:
+            if not wait_for(said("recording status"), PROFILER_ATTACH_TIMEOUT):
+                raise RuntimeError(f"qmlprofiler never started recording (exit {proc.poll()}): {tail()}")
+            self.ipc("bar", "close")
+            log(f"profile: idle {secs / 2:g}s")
+            time.sleep(secs / 2)
+            for name in PROFILE_DROPDOWNS:
+                log(f"profile: dropdown {name}")
+                self.ipc("bar", "toggle", name)
+                time.sleep(KEEP_OPEN)
+                self.ipc("bar", "close")
+                time.sleep(SETTLE)
+                if proc.poll() is not None:
+                    raise RuntimeError(f"qmlprofiler exited during recording (exit {proc.poll()}): {tail()}")
+            if not send("flush"):
+                raise RuntimeError(f"qmlprofiler stdin closed before flush: {tail()}")
+            if not wait_for(trace_written, PROFILER_FLUSH_TIMEOUT):
+                raise RuntimeError(f"qmlprofiler wrote no trace after flush: {tail()}")
+            send("quit")
+            try:
+                proc.wait(15)
+            except subprocess.TimeoutExpired:
+                self.error("profile: qmlprofiler did not exit after quit, killed")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                try:
+                    proc.wait(5)
+                except subprocess.TimeoutExpired:
+                    pass
+
+        if not os.path.exists(trace) or os.path.getsize(trace) == 0:
+            raise RuntimeError(f"empty or missing trace: {tail()}")
+        p = run_cmd([sys.executable, QTD_SUMMARY, trace, "--json", "--root", self.config, "--top", str(PROFILE_TOP)],
+                    timeout=300, check=False)
+        if p.returncode != 0:
+            raise RuntimeError(f"qtd_summary exit {p.returncode}: {(p.stderr or p.stdout).strip()[-200:]}")
+        try:
+            summary = json.loads(p.stdout)
+        except ValueError as e:
+            raise RuntimeError(f"qtd_summary produced invalid JSON: {e}")
+        if not summary.get("recording", {}).get("ranges"):
+            raise RuntimeError("trace contains no ranges")
+        summary["run"] = {"seconds": secs, "port": port}
+        self.profile = summary
+        self.profile_trace = trace
+
+    def phase_interactions(self):
+        for name in DROPDOWNS:
+            self.interact(name, name, None)
+        self.interact("cpu-cold", "cpu", "cold")
+        self.interact("cpu-warm", "cpu", "warm")
+
+    # ---- statistics and report -------------------------------------------------------------
+    @staticmethod
+    def stats(entry):
+        v = sorted(entry["values"])
+        out = {"n": len(v), "timeouts": entry["timeouts"], "avg": None, "p50": None, "p95": None, "max": None}
+        if v:
+            def pct(p):  # linear interpolation
+                k = (len(v) - 1) * p
+                lo, hi = math.floor(k), math.ceil(k)
+                return v[lo] + (v[hi] - v[lo]) * (k - lo)
+            out.update(avg=sum(v) / len(v), p50=pct(0.5), p95=pct(0.95), max=v[-1])
+        return out
+
+    def finish_report(self, started, label, aborted):
+        stats = {k: self.stats(e) for k, e in self.samples.items()}
+        meta = dict(self.meta)
+        meta.update(
+            label=label, date=started.isoformat(timespec="seconds"), git_rev=git_rev(self.config),
+            config=self.config,
+            cpus=self.args.cpus, iterations=self.args.iterations, idle_s=self.args.idle,
+            startups=self.args.startups, loadavg_start=self.meta.get("loadavg_start"), loadavg_end=loadavg(),
+            aborted=aborted)
+        os.makedirs(OUT_DIR, exist_ok=True)
+        stem = started.strftime("%Y%m%d-%H%M%S") + (("-" + re.sub(r"[^\w.-]+", "_", label)) if label else "")
+        path = os.path.join(OUT_DIR, stem + ".json")
+        prev = newest_older(stem + ".json")
+        if self.profile is not None and self.profile_trace and os.path.exists(self.profile_trace):
+            os.replace(self.profile_trace, os.path.join(OUT_DIR, stem + ".qtd"))
+            self.profile["run"]["trace"] = stem + ".qtd"
+        md = render_md(meta, stats, self.errors, prev, self.profile)
+        with open(path, "w") as f:
+            doc = {"meta": meta, "samples": self.samples, "stats": stats, "errors": self.errors}
+            if self.profile is not None:
+                doc["profile"] = self.profile
+            json.dump(doc, f, indent=1)
+        with open(os.path.join(OUT_DIR, stem + ".md"), "w") as f:
+            f.write(md)
+        log(f"wrote {path}")
+        print(md)
+
+
+def loadavg():
+    try:
+        with open("/proc/loadavg") as f:
+            return " ".join(f.read().split()[:3])
+    except OSError:
+        return None
+
+
+def git_rev(config):
+    """Short rev of the config dir if it is a git repo, else of ~/.dotfiles."""
+    for cmd in (["git", "-C", config, "rev-parse", "--short", "HEAD"],
+                ["git", f"--git-dir={os.path.expanduser('~/.dotfiles')}", "rev-parse", "--short", "HEAD"]):
+        try:
+            p = run_cmd(cmd, timeout=10, check=False)
+        except (RuntimeError, OSError):
+            continue
+        if p.returncode == 0 and p.stdout.strip():
+            return p.stdout.strip()
+    return None
+
+
+def newest_older(own_name):
+    """Newest JSON in OUT_DIR whose name sorts before ours (names start with the timestamp)."""
+    try:
+        names = sorted(n for n in os.listdir(OUT_DIR) if n.endswith(".json") and n < own_name)
+    except OSError:
+        return None
+    for n in reversed(names):
+        try:
+            with open(os.path.join(OUT_DIR, n)) as f:
+                d = json.load(f)
+            d["_name"] = n
+            return d
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def fmt(v):
+    if v is None:
+        return "-"
+    if float(v).is_integer():
+        return str(int(v))
+    return f"{v:.2f}" if abs(v) < 10 else f"{v:.1f}"
+
+
+def delta(key, cur, prev_stats):
+    """Delta column: percent change of the average vs the previous run, marked beyond ±10%."""
+    p = (prev_stats or {}).get(key)
+    if cur["avg"] is None:
+        return ""
+    if not p or p.get("avg") is None:
+        return "new" if prev_stats is not None else ""
+    diff = cur["avg"] - p["avg"]
+    if p["avg"] == 0:
+        return "=" if diff == 0 else f"+{fmt(diff)} (was 0)"
+    pc = diff / abs(p["avg"]) * 100
+    mark = ""
+    if abs(pc) > REGRESSION and abs(diff) >= DELTA_FLOOR:
+        mark = " ▲ worse" if pc > 0 else " ▼ better"
+    return f"{pc:+.0f}%{mark}"
+
+
+def section_of(key):
+    return key.split("/", 1)[0]
+
+
+def md_cell(s):
+    return str(s).replace("|", "\\|")
+
+
+def render_profile_md(profile, prev_profile):
+    """Markdown sections of the profiling stage; prev_profile (may be None) only feeds the
+    'prev self ms' column."""
+    run = profile.get("run", {})
+    rec = profile.get("recording", {})
+    lines = ["", "## Profile (qmlprofiler; not part of the timing deltas)", "",
+             f"- workload: {run.get('seconds')}s total (half idle, then each dropdown opened once), "
+             f"trace {run.get('trace', 'n/a')}",
+             f"- recording: {rec.get('duration_s')} s, {rec.get('ranges')} ranges",
+             "- profiler overhead inflates all numbers; compare only against other profile runs"]
+
+    feats = profile.get("features") or {}
+    lines += ["", "### Feature totals", "", "| feature | ranges | total ms | self ms |", "|---|---:|---:|---:|"]
+    for k, v in sorted(feats.items(), key=lambda kv: -kv[1].get("self_ms", 0)):
+        lines.append(f"| {k} | {v.get('ranges')} | {fmt(v.get('total_ms'))} | {fmt(v.get('self_ms'))} |")
+
+    prev_has = prev_profile is not None
+    for key, title in (("Javascript", "JavaScript"), ("Binding", "Bindings"), ("HandlingSignal", "Signal handlers")):
+        rows = profile.get(key)
+        if not rows:
+            continue
+        if key == "Javascript":
+            heading = "Top 10 JavaScript by self ms"
+        else:
+            heading = f"Top 10 {title.lower()} by self ms"
+        prev_self = {r["name"]: r.get("self_ms") for r in (prev_profile or {}).get(key, [])}
+        lines += ["", f"### {heading}", "",
+                  "| location | count | self ms | total ms | prev self ms |", "|---|---:|---:|---:|---:|"]
+        for r in sorted(rows, key=lambda r: -r.get("self_ms", 0))[:10]:
+            ps = prev_self.get(r["name"])
+            lines.append(f"| {md_cell(r['name'])} | {r.get('count')} | {fmt(r.get('self_ms'))} | "
+                         f"{fmt(r.get('total_ms'))} | {fmt(ps) if prev_has and ps is not None else '-'} |")
+
+    creating = profile.get("Creating_by_file")
+    if creating:
+        lines += ["", "### Component creation per file (by self ms)", "",
+                  "| file | count | self ms | total ms | max ms |", "|---|---:|---:|---:|---:|"]
+        for r in creating:
+            lines.append(f"| {md_cell(r['file'])} | {r.get('count')} | {fmt(r.get('self_ms'))} | "
+                         f"{fmt(r.get('total_ms'))} | {fmt(r.get('max_ms'))} |")
+
+    sg = profile.get("SceneGraph") or []
+    wanted = (("RenderLoopFrame", ("sync", "render")), ("PolishAndSync", ("polish", "sync", "animations")))
+    rows, fps = [], []
+    for prefix, phases in wanted:
+        for e in sg:
+            if e["type"].startswith(prefix):
+                fps.append(f"{e['type']}: {e['frames']} frames, {fmt(e.get('fps_avg'))}/s")
+                for ph in phases:
+                    v = (e.get("phases_us") or {}).get(ph)
+                    if v:
+                        rows.append(f"| {prefix} | {ph} | {v.get('n')} | {fmt(v.get('p50'))} | {fmt(v.get('p95'))} |")
+    if rows:
+        lines += ["", "### Scene graph phases (µs; all windows merged)", "",
+                  "| frame | phase | n | p50 | p95 |", "|---|---|---:|---:|---:|"] + rows
+    if fps:
+        lines += ["", "### Frames per second (averaged over the whole recording)", ""] + [f"- {x}" for x in fps]
+    return lines
+
+
+def render_md(meta, stats, errors, prev, profile=None):
+    mon = meta.get("monitor") or {}
+    lines = [f"# Quickshell bench{(': ' + meta['label']) if meta.get('label') else ''}", ""]
+    lines += [
+        f"- date: {meta['date']}",
+        f"- config: {meta.get('config') or 'n/a'}",
+        f"- git rev: {meta.get('git_rev') or 'n/a'}",
+        f"- cpu pinning: {meta.get('cpus') or 'none'}",
+        f"- loadavg (1/5/15m) start: {meta.get('loadavg_start')}  end: {meta.get('loadavg_end')}"
+        "  (the desktop keeps running; high load = noisy numbers)",
+        f"- monitor: {mon.get('name')} {mon.get('width')}x{mon.get('height')}@{mon.get('refresh')}",
+        f"- iterations: {meta['iterations']}, idle: {meta['idle_s']}s, startups: {meta['startups']}",
+        f"- compared against: {prev['_name'] if prev else 'no earlier run'}",
+    ]
+    if meta.get("aborted"):
+        lines.append(f"- **ABORTED (partial results): {meta['aborted']}**")
+    prev_stats = prev.get("stats") if prev else None
+    order = ["startup", "idle"] + [s for s in DROPDOWNS] + ["cpu-cold", "cpu-warm", "fetch"]
+    sections = {}
+    for k in stats:
+        sections.setdefault(section_of(k), []).append(k)
+    for sec in order + [s for s in sections if s not in order]:
+        keys = sections.get(sec)
+        if not keys:
+            continue
+        lines += ["", f"## {sec}", "", "| metric | n | avg | p50 | p95 | max | timeouts | Δ avg vs prev |",
+                  "|---|---:|---:|---:|---:|---:|---:|---|"]
+        for k in keys:
+            s = stats[k]
+            lines.append(f"| {k.split('/', 1)[1]} | {s['n']} | {fmt(s['avg'])} | {fmt(s['p50'])} | {fmt(s['p95'])} "
+                         f"| {fmt(s['max'])} | {s['timeouts']} | {delta(k, s, prev_stats)} |")
+    total_to = sum(s["timeouts"] for s in stats.values())
+    lines += ["", f"Timeouts (missing log lines, not included in stats): {total_to}"]
+    if profile is not None:
+        lines += render_profile_md(profile, (prev or {}).get("profile"))
+    if errors:
+        lines += ["", "## Errors", ""] + [f"- {e.splitlines()[0]}" for e in errors[:30]]
+    lines.append("")
+    return "\n".join(lines)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Quickshell bar benchmark in the isolated bench environment")
+    ap.add_argument("--iterations", type=int, default=5, help="opens per dropdown variant (default 5)")
+    ap.add_argument("--idle", type=float, default=30, help="idle measurement seconds (default 30)")
+    ap.add_argument("--startups", type=int, default=3, help="startup samples (default 3)")
+    ap.add_argument("--label", default="", help="label for the report/file name")
+    ap.add_argument("--cpus", default="", help="CPU list to pin the environment to (passed to env start)")
+    ap.add_argument("--config", default=DEFAULT_CONFIG, metavar="DIR",
+                    help="Quickshell config dir to benchmark (default ~/.config/quickshell)")
+    ap.add_argument("--keep", action="store_true", help="leave the environment running at the end")
+    ap.add_argument("--profile", type=float, default=None, metavar="SECONDS",
+                    help="after the timing phases, record a qmlprofiler trace of SECONDS (e.g. 20): "
+                         "half idle, then every dropdown once (default: off)")
+    args = ap.parse_args()
+    if args.iterations < 1 or args.startups < 1:
+        ap.error("--iterations and --startups must be >= 1")
+    if args.profile is not None and args.profile <= 0:
+        ap.error("--profile must be > 0")
+
+    # SIGTERM behaves like Ctrl-C so the environment is always torn down
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+
+    started = datetime.datetime.now()
+    b = Bench(args)
+    b.meta["loadavg_start"] = loadavg()
+    aborted = None
+    try:
+        b.phase_startup()
+        b.phase_idle()
+        b.phase_interactions()
+        if args.profile:
+            b.phase_profile()
+    except KeyboardInterrupt:
+        aborted = "interrupted"
+    except Exception as e:  # keep what was measured so far
+        aborted = f"{type(e).__name__}: {e}".splitlines()[0]
+        log(f"failed: {e}")
+    finally:
+        if b.follower:
+            b.follower.close()
+        if not args.keep:
+            log("env stop")
+            try:
+                run_cmd([ENV, "stop"], timeout=120, check=False)
+            except RuntimeError as e:
+                log(f"env stop failed: {e}")
+    if b.samples:
+        b.finish_report(started, args.label, aborted)
+    return 1 if aborted else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
