@@ -107,7 +107,10 @@ PanelWindow {
         implicitHeight: loader.implicitHeight + 2 * Theme.popupPadding
         width: parent.width
         height: implicitHeight
-        y: root.shown ? 0 : -8
+        // slides in whole pixels: the end of the OutCubic slide moves the frame by less than half a
+        // pixel per frame, so rounding drops frames that show no change (and their compositor work)
+        property real slide: root.shown ? 0 : -8
+        y: Math.round(slide)
         opacity: root.shown ? 1 : 0
         radius: Theme.popupRadius
         color: Theme.popupBg
@@ -115,7 +118,7 @@ PanelWindow {
         border.color: Theme.obsidian
 
         Behavior on opacity { NumberAnimation { duration: Theme.animFast; easing.type: Easing.OutCubic } }
-        Behavior on y { NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutCubic } }
+        Behavior on slide { NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutCubic } }
 
         Loader {
             id: loader

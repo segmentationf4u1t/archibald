@@ -49,11 +49,9 @@ Item {
         readonly property var audio: node ? node.audio : null
         readonly property bool muted: audio ? audio.muted : false
         readonly property real volume: audio ? audio.volume : 0
-        readonly property real level: {
-            // linear peak -> 0..1 on a -60..0 dB scale
-            const p = monitor.peak;
-            return p > 0.001 ? Math.max(0, Math.min(1, 1 + 20 * Math.log(p) / Math.LN10 / 60)) : 0;
-        }
+        // linear peak -> 0..1 on a -60..0 dB scale, sampled at 30 Hz (levelTimer): PwNodePeakMonitor
+        // updates its peak for every audio buffer, more often than a meter needs, and each update repainted it
+        property real level: 0
 
         function volumeIcon() {
             if (input)
@@ -100,6 +98,17 @@ Item {
             id: monitor
             node: ch.node
             enabled: ch.node ? true : false
+        }
+
+        Timer {
+            id: levelTimer
+            interval: 33
+            repeat: true
+            running: monitor.enabled
+            onTriggered: {
+                const p = monitor.peak;
+                ch.level = p > 0.001 ? Math.max(0, Math.min(1, 1 + 20 * Math.log(p) / Math.LN10 / 60)) : 0;
+            }
         }
 
         SectionHeader {
