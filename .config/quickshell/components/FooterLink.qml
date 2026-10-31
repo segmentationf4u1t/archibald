@@ -1,8 +1,7 @@
 import QtQuick
-import Quickshell
 import qs
 
-// Muted link at the bottom of a dropdown: starts `command` (argv list) detached, then closes `dropdown`.
+// Muted link at the bottom of a dropdown: starts `command` (argv list, via Launch.exec), then closes `dropdown`.
 Label {
     id: root
 
@@ -21,7 +20,7 @@ Label {
 
     TapHandler {
         onTapped: {
-            Quickshell.execDetached(root.command);
+            Launch.exec(root.command);
             if (root.dropdown)
                 root.dropdown.close();
         }

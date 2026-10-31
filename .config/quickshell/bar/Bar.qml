@@ -111,7 +111,7 @@ PanelWindow {
             icon: Icons.glyph("flame")
             iconSize: 18
             iconColor: Theme.magma
-            onClicked: Quickshell.execDetached(["sh", "-c", "pkill -x rofi || rofi -show drun"])
+            onClicked: Launch.exec(["sh", "-c", "pkill -x rofi || rofi -show drun"])
         }
 
         Workspaces {
@@ -246,7 +246,7 @@ PanelWindow {
             icon: Icons.glyph("power")
             iconColor: Theme.magma
             padding: 12
-            onClicked: Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/rofi-power"])
+            onClicked: Launch.exec([Quickshell.env("HOME") + "/.local/bin/rofi-power"])
         }
     }
 

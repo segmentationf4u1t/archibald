@@ -1,4 +1,8 @@
 //@ pragma IconTheme Papirus-Dark-Volcanic
+// Software scene graph instead of GL: no GL context and render thread per window, so less memory
+// and cheaper redraws of the bar's small updates. DefaultEnv, so an explicit QT_QUICK_BACKEND
+// (empty = GL) still wins; programs started from the bar go through Launch.exec, which removes it.
+//@ pragma DefaultEnv QT_QUICK_BACKEND=software
 import QtQuick
 import Quickshell
 import Quickshell.Io

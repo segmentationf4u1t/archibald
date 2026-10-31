@@ -1,8 +1,6 @@
 import QtQuick
-import QtQuick.Effects
 import Quickshell
 import Quickshell.Services.SystemTray
-import Quickshell.Widgets
 import qs
 import qs.components
 
@@ -56,32 +54,48 @@ Row {
                 opacity: slot.iconOpacity
             }
 
-            // unknown app: its own icon in grayscale, tinted with the text color (a flat silhouette would
-            // turn round app icons into blank discs). Only instantiated for items without a Tabler glyph,
-            // so known items create neither the image nor the effect.
+            // unknown app: its own icon in grayscale, brightened (a flat silhouette would turn round app
+            // icons into blank discs). Only instantiated for items without a Tabler glyph. A Canvas, not
+            // MultiEffect: the bar uses the software scene graph (shell.qml), which has no shader effects.
+            // Same output as the MultiEffect it replaces (brightness 0.15, saturation -1; its colorization
+            // never took effect, measured): luma (0.299/0.587/0.114) + 0.15, alpha kept.
             Loader {
                 anchors.centerIn: parent
                 active: slot.glyph === ""
-                sourceComponent: Item {
-                    implicitWidth: 18
-                    implicitHeight: 18
+                sourceComponent: Canvas {
+                    readonly property string icon: slot.modelData.icon
+                    property string loaded: ""   // image held in the Canvas cache (SNI icon URLs change per update)
 
-                    IconImage {
-                        id: ownIcon
-                        anchors.fill: parent
-                        implicitSize: 18
-                        visible: false
-                        source: slot.modelData.icon
+                    function load() {
+                        if (loaded !== "" && loaded !== icon)
+                            unloadImage(loaded);
+                        loaded = icon;
+                        if (icon !== "")
+                            loadImage(icon);
+                        requestPaint();          // already-cached images emit no imageLoaded
                     }
 
-                    MultiEffect {
-                        anchors.fill: parent
-                        source: ownIcon
-                        brightness: 0.15
-                        saturation: -1.0
-                        colorization: 1.0
-                        colorizationColor: Theme.magma
-                        opacity: slot.iconOpacity
+                    implicitWidth: 18
+                    implicitHeight: 18
+                    opacity: slot.iconOpacity
+
+                    onIconChanged: load()
+                    Component.onCompleted: load()
+                    onImageLoaded: requestPaint()
+                    onPaint: {
+                        const ctx = getContext("2d");
+                        ctx.clearRect(0, 0, width, height);
+                        if (icon === "" || !isImageLoaded(icon))
+                            return;
+                        ctx.drawImage(icon, 0, 0, width, height);
+                        const img = ctx.getImageData(0, 0, width, height);
+                        const px = img.data;
+                        for (let i = 0; i < px.length; i += 4) {
+                            const l = Math.min(255, 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2] + 0.15 * 255);
+                            px[i] = px[i + 1] = px[i + 2] = l;
+                        }
+                        // with the dirty rect: the 3-argument form is a no-op in this Qt (6.12, measured)
+                        ctx.putImageData(img, 0, 0, 0, 0, width, height);
                     }
                 }
             }

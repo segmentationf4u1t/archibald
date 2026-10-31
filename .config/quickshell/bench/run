@@ -250,7 +250,7 @@ class Bench:
     # ---- phases ----------------------------------------------------------------------------
     def phase_startup(self):
         a = self.args
-        cmd = ["start"]
+        cmd = ["start", "--outputs", str(a.outputs)]
         if a.cpus:
             cmd += ["--cpus", a.cpus]
         log("env start")
@@ -585,12 +585,13 @@ class Bench:
             label=label, date=started.isoformat(timespec="seconds"), git_rev=git_rev(self.config),
             config=self.config,
             cpus=self.args.cpus, iterations=self.args.iterations, idle_s=self.args.idle,
-            startups=self.args.startups, loadavg_start=self.meta.get("loadavg_start"), loadavg_end=loadavg(),
+            startups=self.args.startups, outputs=self.args.outputs,
+            loadavg_start=self.meta.get("loadavg_start"), loadavg_end=loadavg(),
             aborted=aborted)
         os.makedirs(OUT_DIR, exist_ok=True)
         stem = started.strftime("%Y%m%d-%H%M%S") + (("-" + re.sub(r"[^\w.-]+", "_", label)) if label else "")
         path = os.path.join(OUT_DIR, stem + ".json")
-        prev = newest_older(stem + ".json")
+        prev = newest_older(stem + ".json", self.args.outputs)
         if self.profile is not None and self.profile_trace and os.path.exists(self.profile_trace):
             os.replace(self.profile_trace, os.path.join(OUT_DIR, stem + ".qtd"))
             self.profile["run"]["trace"] = stem + ".qtd"
@@ -627,8 +628,9 @@ def git_rev(config):
     return None
 
 
-def newest_older(own_name):
-    """Newest JSON in OUT_DIR whose name sorts before ours (names start with the timestamp)."""
+def newest_older(own_name, outputs):
+    """Newest JSON in OUT_DIR whose name sorts before ours (names start with the timestamp) and that
+    measured the same number of bars (runs before --outputs existed had one)."""
     try:
         names = sorted(n for n in os.listdir(OUT_DIR) if n.endswith(".json") and n < own_name)
     except OSError:
@@ -637,10 +639,11 @@ def newest_older(own_name):
         try:
             with open(os.path.join(OUT_DIR, n)) as f:
                 d = json.load(f)
-            d["_name"] = n
-            return d
         except (OSError, ValueError):
             continue
+        if d.get("meta", {}).get("outputs", 1) == outputs:
+            d["_name"] = n
+            return d
     return None
 
 
@@ -747,7 +750,8 @@ def render_md(meta, stats, errors, prev, profile=None):
         f"- cpu pinning: {meta.get('cpus') or 'none'}",
         f"- loadavg (1/5/15m) start: {meta.get('loadavg_start')}  end: {meta.get('loadavg_end')}"
         "  (the desktop keeps running; high load = noisy numbers)",
-        f"- monitor: {mon.get('name')} {mon.get('width')}x{mon.get('height')}@{mon.get('refresh')}",
+        f"- monitor: {mon.get('name')} {mon.get('width')}x{mon.get('height')}@{mon.get('refresh')}"
+        f" (+{meta.get('outputs', 1) - 1} headless, one bar each)",
         f"- iterations: {meta['iterations']}, idle: {meta['idle_s']}s, startups: {meta['startups']}",
         f"- compared against: {prev['_name'] if prev else 'no earlier run'}",
     ]
@@ -788,12 +792,15 @@ def main():
     ap.add_argument("--config", default=DEFAULT_CONFIG, metavar="DIR",
                     help="Quickshell config dir to benchmark (default ~/.config/quickshell)")
     ap.add_argument("--keep", action="store_true", help="leave the environment running at the end")
+    ap.add_argument("--outputs", type=int, default=3,
+                    help="nested outputs, one bar each (default 3); "
+                         "reports are only compared with runs of the same count")
     ap.add_argument("--profile", type=float, default=None, metavar="SECONDS",
                     help="after the timing phases, record a qmlprofiler trace of SECONDS (e.g. 20): "
                          "half idle, then every dropdown once (default: off)")
     args = ap.parse_args()
-    if args.iterations < 1 or args.startups < 1:
-        ap.error("--iterations and --startups must be >= 1")
+    if args.iterations < 1 or args.startups < 1 or args.outputs < 1:
+        ap.error("--iterations, --startups and --outputs must be >= 1")
     if args.profile is not None and args.profile <= 0:
         ap.error("--profile must be > 0")
 

@@ -75,7 +75,7 @@ SCRUB = ("WAYLAND_DISPLAY", "WAYLAND_SOCKET", "HYPRLAND_INSTANCE_SIGNATURE", "HY
 # Contract fields printed by start / restart-qs / status (state.json may carry more).
 PUBLIC_KEYS = ("state_dir", "qs_pid", "hypr_sig", "wayland_display", "xdg_runtime_dir",
                "dbus_address", "shell_cgroup", "compositor_cgroup", "qs_startup_ms",
-               "qs_debug_port", "config_dir", "monitor")
+               "qs_debug_port", "config_dir", "monitor", "outputs")
 
 BUS_CONF = """<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
@@ -596,30 +596,39 @@ def start_quickshell(state, cpus, qs_debug, config_dir):
                 time.sleep(0.002)
 
 
-def find_bar_layer(state, pid=None):
-    """The qs-bar layer surface (of quickshell `pid`, if given), or None."""
+def bar_layers(state, pid=None):
+    """Number of qs-bar layer surfaces (of quickshell `pid`, if given)."""
     def walk(node):
         if isinstance(node, dict):
             if node.get("namespace") == "qs-bar" and (pid is None or node.get("pid") == pid):
-                return node
+                return 1
             node = list(node.values())
-        if isinstance(node, list):
-            for v in node:
-                r = walk(v)
-                if r:
-                    return r
-        return None
+        return sum(walk(v) for v in node) if isinstance(node, list) else 0
     return walk(hyprctl(state, "layers", "-j"))
 
 
 def wait_bar_layer(state, pid, timeout=15):
+    """Until quickshell `pid` has a bar on every nested output."""
+    want = state.get("outputs", 1)
     deadline = now() + timeout
     while now() < deadline:
-        if find_bar_layer(state, pid):
+        if bar_layers(state, pid) >= want:
             return
         time.sleep(0.01)
-    raise EnvError("quickshell loaded but no qs-bar layer surface appeared in the nested Hyprland:\n"
+    raise EnvError(f"quickshell loaded but fewer than {want} qs-bar layer surfaces appeared in the nested Hyprland:\n"
                    + tail(f"{STATE_DIR}/quickshell.log"))
+
+
+def add_outputs(state, n):
+    """Extra headless outputs in the nested Hyprland, one bar and dropdown surface each:
+    BENCH-2..BENCH-n, placed right of the cage-backed one, same mode."""
+    for i in range(2, n + 1):
+        hyprctl(state, "output", "create", "headless", f"BENCH-{i}")
+    deadline = now() + 10
+    while len([m for m in hyprctl(state, "monitors", "-j") if m["width"] > 0]) < n:
+        if now() > deadline:
+            raise EnvError(f"nested Hyprland did not report {n} outputs")
+        time.sleep(0.01)
 
 
 def monitor_info(state):
@@ -656,6 +665,8 @@ def scopes_active(units):
 
 def cmd_start(args):
     check_cpus(args.cpus)
+    if args.outputs < 1:
+        raise EnvError("--outputs must be >= 1")
     config_dir = resolve_config(args.config)
     state = read_state()
     if state and scopes_active(ALL_UNITS):
@@ -671,13 +682,14 @@ def cmd_start(args):
             os.symlink(f"{HOST_RT}/{name}", f"{RT_DIR}/{name}")
 
     state = {"state_dir": STATE_DIR, "xdg_runtime_dir": RT_DIR, "cpus": args.cpus,
-             "qs_debug_port": args.qs_debug, "config_dir": config_dir}
+             "qs_debug_port": args.qs_debug, "config_dir": config_dir, "outputs": args.outputs}
     try:
         shims = build_shims()
         state["dbus_address"], state["bus_cgroup"] = start_bus(args.cpus)
         (state["compositor_cgroup"], state["hypr_sig"],
          state["wayland_display"]) = start_compositor(args.cpus, state["dbus_address"], shims)
         state["monitor"] = monitor_info(state)
+        add_outputs(state, args.outputs)              # before quickshell: startup covers every bar
         (state["qs_pid"], state["shell_cgroup"],
          state["qs_startup_ms"]) = start_quickshell(state, args.cpus, args.qs_debug, config_dir)
         wait_bar_layer(state, state["qs_pid"])
@@ -698,8 +710,8 @@ def cmd_restart_qs(args):
     # The config of the running instance is kept unless --config says otherwise.
     config_dir = resolve_config(args.config or state["config_dir"])
     stop_scope(UNIT_SHELL, state.get("shell_cgroup"))
-    deadline = now() + 10                              # the old bar's layer must be gone first
-    while find_bar_layer(state) and now() < deadline:
+    deadline = now() + 10                              # the old bars' layers must be gone first
+    while bar_layers(state) and now() < deadline:
         time.sleep(0.01)
     state["qs_debug_port"], state["config_dir"] = args.qs_debug, config_dir
     state["qs_pid"], state["shell_cgroup"], state["qs_startup_ms"] = start_quickshell(
@@ -748,6 +760,8 @@ def main():
                        help="quickshell config dir (default: %(default)s)")
         p.add_argument("--qs-debug", type=int, metavar="PORT", help="quickshell --debug PORT")
         p.add_argument("--cpus", metavar="LIST", help="pin the whole stack to these CPUs (e.g. 2-5)")
+        p.add_argument("--outputs", type=int, default=1, metavar="N",
+                       help="nested outputs, each gets a bar (default: %(default)s)")
         p.set_defaults(fn=cmd_start)
         sub.add_parser("exec", help="run a command inside the bench environment: exec -- CMD...")
         p = sub.add_parser("restart-qs", help="relaunch only quickshell")
