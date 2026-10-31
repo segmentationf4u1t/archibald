@@ -231,49 +231,60 @@ Item {
                 small: true
             }
 
-            ListView {
-                id: pairedList
+            // not a ListView: a delegate width that follows the view makes the view re-run its
+            // layout (and repaint) continuously while the popup is open
+            Flickable {
+                id: pairedFlick
                 Layout.fillWidth: true
-                Layout.preferredHeight: Math.min(contentHeight, 5 * 50)
+                Layout.preferredHeight: Math.min(pairedCol.implicitHeight, 5 * 50)
                 visible: root.pairedDevices.length > 0
+                contentWidth: width
+                contentHeight: pairedCol.implicitHeight
                 clip: true
-                spacing: 2
-                interactive: contentHeight > height
                 boundsBehavior: Flickable.StopAtBounds
-                model: ScriptModel {
-                    values: root.pairedDevices
-                }
 
-                delegate: Item {
-                    id: pairedRow
+                ColumnLayout {
+                    id: pairedCol
+                    width: pairedFlick.width
+                    spacing: 2
 
-                    required property var modelData
+                    Repeater {
+                        model: ScriptModel {
+                            values: root.pairedDevices
+                        }
 
-                    width: pairedList.width
-                    height: 48
+                        delegate: Item {
+                            id: pairedRow
 
-                    HoverHandler {
-                        id: rowHover
-                    }
+                            required property var modelData
 
-                    ListItem {
-                        anchors.fill: parent
-                        icon: root.deviceGlyph(pairedRow.modelData.icon)
-                        iconColor: pairedRow.modelData.connected ? Theme.magma : Theme.ash
-                        title: root.deviceName(pairedRow.modelData)
-                        subtitle: root.deviceSubtitle(pairedRow.modelData)
-                        highlighted: pairedRow.modelData.connected
-                        busy: pairedRow.modelData.state === BluetoothDeviceState.Connecting
-                            || pairedRow.modelData.state === BluetoothDeviceState.Disconnecting
-                        onClicked: root.toggleConnection(pairedRow.modelData)
+                            Layout.fillWidth: true
+                            height: 48
 
-                        IconButton {
-                            visible: rowHover.hovered
-                            icon: Icons.glyph("trash")
-                            iconColor: Theme.ash
-                            implicitWidth: 28
-                            implicitHeight: 28
-                            onClicked: pairedRow.modelData.forget()
+                            HoverHandler {
+                                id: rowHover
+                            }
+
+                            ListItem {
+                                anchors.fill: parent
+                                icon: root.deviceGlyph(pairedRow.modelData.icon)
+                                iconColor: pairedRow.modelData.connected ? Theme.magma : Theme.ash
+                                title: root.deviceName(pairedRow.modelData)
+                                subtitle: root.deviceSubtitle(pairedRow.modelData)
+                                highlighted: pairedRow.modelData.connected
+                                busy: pairedRow.modelData.state === BluetoothDeviceState.Connecting
+                                    || pairedRow.modelData.state === BluetoothDeviceState.Disconnecting
+                                onClicked: root.toggleConnection(pairedRow.modelData)
+
+                                IconButton {
+                                    visible: rowHover.hovered
+                                    icon: Icons.glyph("trash")
+                                    iconColor: Theme.ash
+                                    implicitWidth: 28
+                                    implicitHeight: 28
+                                    onClicked: pairedRow.modelData.forget()
+                                }
+                            }
                         }
                     }
                 }
@@ -320,32 +331,41 @@ Item {
                 small: true
             }
 
-            ListView {
-                id: availableList
+            Flickable {
+                id: availableFlick
                 Layout.fillWidth: true
-                Layout.preferredHeight: Math.min(contentHeight, 5 * 50)
+                Layout.preferredHeight: Math.min(availableCol.implicitHeight, 5 * 50)
                 visible: root.availableDevices.length > 0
+                contentWidth: width
+                contentHeight: availableCol.implicitHeight
                 clip: true
-                spacing: 2
-                interactive: contentHeight > height
                 boundsBehavior: Flickable.StopAtBounds
-                model: ScriptModel {
-                    values: root.availableDevices
-                }
 
-                delegate: ListItem {
-                    id: availRow
+                ColumnLayout {
+                    id: availableCol
+                    width: availableFlick.width
+                    spacing: 2
 
-                    required property var modelData
+                    Repeater {
+                        model: ScriptModel {
+                            values: root.availableDevices
+                        }
 
-                    width: availableList.width
-                    height: 48
-                    icon: root.deviceGlyph(modelData.icon)
-                    iconColor: Theme.ash
-                    title: root.deviceName(modelData)
-                    subtitle: modelData.pairing ? I18n.tr("Pairing…") : I18n.tr("Click to pair · %1", modelData.address)
-                    busy: modelData.pairing
-                    onClicked: root.pairDevice(modelData)
+                        delegate: ListItem {
+                            id: availRow
+
+                            required property var modelData
+
+                            Layout.fillWidth: true
+                            height: 48
+                            icon: root.deviceGlyph(modelData.icon)
+                            iconColor: Theme.ash
+                            title: root.deviceName(modelData)
+                            subtitle: modelData.pairing ? I18n.tr("Pairing…") : I18n.tr("Click to pair · %1", modelData.address)
+                            busy: modelData.pairing
+                            onClicked: root.pairDevice(modelData)
+                        }
+                    }
                 }
             }
         }

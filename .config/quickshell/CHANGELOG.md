@@ -17,3 +17,7 @@
 - The Wi-Fi list re-sorts by signal strength 1.5 s after a change instead of on every scan update.
 - The bar renders with Qt Quick's software renderer, which needs much less memory than an OpenGL context per window; set `QT_QUICK_BACKEND` (empty for OpenGL) to override it.
 - The audio dropdown's level meters update at 30 Hz.
+
+### Fixed
+
+- The Bluetooth dropdown no longer repaints continuously while it is open.
