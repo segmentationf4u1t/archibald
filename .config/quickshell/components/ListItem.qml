@@ -47,18 +47,18 @@ Rectangle {
             Layout.preferredWidth: 20
         }
 
-        ColumnLayout {
+        Column {
             Layout.fillWidth: true
             spacing: 0
 
             Label {
-                Layout.fillWidth: true
+                width: parent.width
                 text: root.title
                 color: root.highlighted ? Theme.magma : Theme.text
             }
 
             Label {
-                Layout.fillWidth: true
+                width: parent.width
                 visible: root.subtitle !== ""
                 text: root.subtitle
                 small: true
