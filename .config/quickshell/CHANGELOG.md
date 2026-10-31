@@ -5,6 +5,7 @@
 ### Added
 
 - `bench/run`: benchmark of the bar (startup, idle cost, open time and CPU per dropdown) in an isolated nested compositor with one bar per output (`bench/env`, `--outputs`), optionally with a QML profiler pass (`--profile`); the bar's `perf` IPC target supplies the measurements.
+- `QS_BENCH_INSTANCE=<id>` runs independent bench stacks in parallel (own state and runtime dirs, scopes and report directory).
 
 ### Changed
 

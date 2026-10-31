@@ -20,7 +20,9 @@ Stack (nothing ever touches the live desktop):
   exact sandbox (`ls /dev /dev/dri`) and refuses to go on if anything else is visible;
 * three transient user scopes make cpu.stat / memory.current of the compositor and of
   Quickshell separately readable, and `--cpus` pins all of them (QS_BENCH_LIMITS adds scope
-  properties such as CPUQuota/MemoryMax/RuntimeMaxSec for risky experiments, never for measurements).
+  properties such as CPUQuota/MemoryMax/RuntimeMaxSec for risky experiments, never for measurements);
+* QS_BENCH_INSTANCE=<up to 3 of a-z0-9> runs an independent stack next to the default one (own
+  state and runtime dirs, scopes qs-bench-<instance>-*), for benches in parallel.
 
 Usage:
     env start [--config DIR] [--qs-debug PORT] [--cpus LIST]   start everything, print state JSON
@@ -51,16 +53,20 @@ UID = os.getuid()
 # separately for nested invocations of this script.
 HOST_RT = (os.environ.get("QS_BENCH_HOST_XDG_RUNTIME_DIR")
            or os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{UID}")
-STATE_DIR = f"{HOST_RT}/qs-bench"                      # state.json, logs, bus config, shims
+INSTANCE = os.environ.get("QS_BENCH_INSTANCE", "")
+if not re.fullmatch(r"[a-z0-9]{0,3}", INSTANCE):
+    sys.exit("env: QS_BENCH_INSTANCE must be at most 3 characters of a-z0-9")
+SUFFIX = f"-{INSTANCE}" if INSTANCE else ""
+STATE_DIR = f"{HOST_RT}/qs-bench{SUFFIX}"             # state.json, logs, bus config, shims
 STATE_FILE = f"{STATE_DIR}/state.json"
 # Private runtime dir. Kept short on purpose: <rt>/hypr/<sig>/.socket2.sock must fit the
 # 107 byte AF_UNIX path limit (the signature alone is ~62 characters).
-RT_DIR = f"{HOST_RT}/qsb"
+RT_DIR = f"{HOST_RT}/qsb{INSTANCE}"
 BUS_SOCKET = f"{RT_DIR}/bus"
 RENDER_NODE = "/dev/dri/renderD128"                    # GPU the nested compositor renders on
 HOST_MODE = (1920, 1080, 60000)                        # cage's headless output: w, h, refresh in mHz
 
-UNIT_BUS, UNIT_COMP, UNIT_SHELL = "qs-bench-bus", "qs-bench-comp", "qs-bench-shell"
+UNIT_BUS, UNIT_COMP, UNIT_SHELL = (f"qs-bench{SUFFIX}-bus", f"qs-bench{SUFFIX}-comp", f"qs-bench{SUFFIX}-shell")
 ALL_UNITS = (UNIT_SHELL, UNIT_COMP, UNIT_BUS)          # stop order: clients first
 
 # Variables of the live session that must never leak into the bench processes. With XDG_SESSION_ID,

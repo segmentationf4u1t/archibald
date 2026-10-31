@@ -8,7 +8,7 @@ through `quickshell ipc call ...` (targets "perf" and "bar") and reads the `[per
 of the instance's stderr log (<state_dir>/quickshell.log, tailed in a background thread for the run).
 
 Phases: startup -> idle -> interactions (one dropdown at a time) -> [profile] -> report.
-Output: ~/.cache/qs-bench/<YYYYmmdd-HHMMSS>[-label].json + .md (+ .qtd with --profile); the markdown
+Output: ~/.cache/qs-bench[/<QS_BENCH_INSTANCE>]/<YYYYmmdd-HHMMSS>[-label].json + .md (+ .qtd with --profile); the markdown
 is also printed to stdout (progress goes to stderr).
 
 usage: bench/run [--iterations N] [--idle S] [--startups N] [--label TEXT] [--cpus LIST] [--keep]
@@ -41,7 +41,10 @@ import time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 ENV = os.path.join(HERE, "env")
-OUT_DIR = os.path.expanduser("~/.cache/qs-bench")
+INSTANCE = os.environ.get("QS_BENCH_INSTANCE", "")   # bench/env runs that instance; reports stay apart
+if not re.fullmatch(r"[a-z0-9]{0,3}", INSTANCE):
+    sys.exit("run: QS_BENCH_INSTANCE must be at most 3 characters of a-z0-9")
+OUT_DIR = os.path.join(os.path.expanduser("~/.cache/qs-bench"), INSTANCE)
 
 # plain dropdowns, benchmarked in this order; the cpu variants come last so that
 # "memory" never sees a procs sample left warm by a cpu run
