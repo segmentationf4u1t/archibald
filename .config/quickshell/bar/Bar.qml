@@ -154,19 +154,29 @@ PanelWindow {
     }
 
     // ---------------------------------------------------------------- right
-    RowLayout {
+    // Modules get their place from bindings (not a RowLayout): the layout engine would run a second
+    // polish pass after the frame that shows a changed value, repainting the bar again for the same
+    // tick. Widths are rounded up like the layout engine does, so the modules land on the same pixels.
+    Item {
         anchors.right: parent.right
         anchors.rightMargin: 4
         anchors.verticalCenter: parent.verticalCenter
-        spacing: 2
+        height: Theme.barHeight
+        width: powerButton.x + powerButton.width
 
         Tray {
             id: tray
+            width: Math.ceil(implicitWidth)
+            x: 0
+            anchors.verticalCenter: parent.verticalCenter
             bar: bar
         }
 
         BarButton {
             id: audioButton
+            width: Math.ceil(implicitWidth)
+            x: tray.x + tray.width + 2
+            anchors.verticalCenter: parent.verticalCenter
             active: bar.openPopup === "audio"
             icon: Icons.volume(bar.sinkVolume, bar.sinkMuted)
             label: bar.sinkMuted ? "mute" : Math.round(bar.sinkVolume * 100) + "%"
@@ -185,6 +195,9 @@ PanelWindow {
 
         BarButton {
             id: bluetoothButton
+            width: Math.ceil(implicitWidth)
+            x: audioButton.x + audioButton.width + 2
+            anchors.verticalCenter: parent.verticalCenter
             active: bar.openPopup === "bluetooth"
             icon: Icons.glyph(!bar.btAdapter?.enabled ? "bluetooth-off" : bar.btConnected > 0 ? "bluetooth-connected" : "bluetooth")
             label: bar.btConnected > 0 ? String(bar.btConnected) : ""
@@ -194,6 +207,9 @@ PanelWindow {
 
         BarButton {
             id: networkButton
+            width: Math.ceil(implicitWidth)
+            x: bluetoothButton.x + bluetoothButton.width + 2
+            anchors.verticalCenter: parent.verticalCenter
             readonly property real signal: bar.wifiNetwork?.signalStrength ?? 0
             active: bar.openPopup === "network"
             icon: bar.wiredUp ? Icons.glyph("network")
@@ -205,6 +221,9 @@ PanelWindow {
 
         BarButton {
             id: cpuButton
+            width: Math.ceil(implicitWidth)
+            x: networkButton.x + networkButton.width + 2
+            anchors.verticalCenter: parent.verticalCenter
             active: bar.openPopup === "cpu"
             icon: Icons.glyph("cpu")
             label: Math.round(SysStats.cpu) + "%"
@@ -215,6 +234,9 @@ PanelWindow {
 
         BarButton {
             id: memoryButton
+            width: Math.ceil(implicitWidth)
+            x: cpuButton.x + cpuButton.width + 2
+            anchors.verticalCenter: parent.verticalCenter
             active: bar.openPopup === "memory"
             icon: Icons.glyph("device-sd-card")
             label: Math.round(SysStats.mem) + "%"
@@ -225,6 +247,9 @@ PanelWindow {
 
         BarButton {
             id: diskButton
+            width: Math.ceil(implicitWidth)
+            x: memoryButton.x + memoryButton.width + 2
+            anchors.verticalCenter: parent.verticalCenter
             active: bar.openPopup === "disk"
             icon: Icons.glyph("server")
             label: Math.round(SysStats.diskUtil) + "%"   // busiest disk, % of time busy
@@ -234,6 +259,9 @@ PanelWindow {
 
         BarButton {
             id: gpuButton
+            width: visible ? Math.ceil(implicitWidth) : 0
+            x: diskButton.x + diskButton.width + 2
+            anchors.verticalCenter: parent.verticalCenter
             visible: SysStats.gpus.length > 0
             active: bar.openPopup === "gpu"
             icon: Icons.glyph("gpu")
@@ -243,6 +271,10 @@ PanelWindow {
         }
 
         BarButton {
+            id: powerButton
+            width: Math.ceil(implicitWidth)
+            x: gpuButton.visible ? gpuButton.x + gpuButton.width + 2 : diskButton.x + diskButton.width + 2
+            anchors.verticalCenter: parent.verticalCenter
             icon: Icons.glyph("power")
             iconColor: Theme.magma
             padding: 12

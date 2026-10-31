@@ -14,13 +14,13 @@ Item {
     property bool active: false        // its dropdown is open
     property int padding: 10
     property bool bold: false
-    default property alias extra: row.data
+    default property alias extra: extras.data
     readonly property bool hovered: area.containsMouse
 
     signal clicked(var mouse)
     signal wheel(var wheel)
 
-    implicitWidth: row.implicitWidth + 2 * padding
+    implicitWidth: row.width + 2 * padding
     implicitHeight: Theme.barHeight
 
     Rectangle {
@@ -35,12 +35,20 @@ Item {
         Behavior on color { ColorAnimation { duration: Theme.animFast } }
     }
 
-    Row {
+    // The content is positioned with bindings instead of a Row: a positioner lays out in a deferred
+    // polish pass, so a label that changes width (a value with one more digit) would invalidate the
+    // bar's module rows after the frame showing the new text, repainting the whole bar once more.
+    Item {
         id: row
         anchors.centerIn: parent
-        spacing: 6
+        width: extras.width > 0 ? extras.x + extras.width
+            : labelItem.visible ? labelItem.x + labelItem.width
+            : iconItem.width
+        height: Math.max(Math.max(iconItem.visible ? iconItem.height : 0, labelItem.visible ? labelItem.height : 0),
+                         extras.height)
 
         Glyph {
+            id: iconItem
             anchors.verticalCenter: parent.verticalCenter
             visible: root.icon !== ""
             text: root.icon
@@ -49,11 +57,20 @@ Item {
         }
 
         Label {
+            id: labelItem
             anchors.verticalCenter: parent.verticalCenter
+            x: iconItem.visible ? iconItem.width + 6 : 0
             visible: root.label !== ""
             text: root.label
             color: root.labelColor
             font.weight: root.bold ? Font.Bold : Font.Medium
+        }
+
+        Row {
+            id: extras
+            anchors.verticalCenter: parent.verticalCenter
+            x: labelItem.visible ? labelItem.x + labelItem.width + 6 : iconItem.visible ? iconItem.width + 6 : 0
+            spacing: 6
         }
     }
 
