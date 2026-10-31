@@ -19,6 +19,7 @@
 - The audio dropdown's level meters update at 30 Hz.
 - GPU and process statistics are read in-process by a native module (`native/`, built by `install.sh`) instead of `nvidia-smi` and a shell per sample: the CPU, memory and GPU dropdowns open with less CPU and show data sooner, with one process fewer.
 - Opening and closing a dropdown takes less CPU: while it fades and slides, its content is drawn once and blended instead of re-rendered every frame; at rest it is drawn exactly as before.
+- The audio dropdown opens and runs with less CPU: it binds only the PipeWire nodes it shows and skips level updates that would not move a meter by a whole pixel.
 
 ### Fixed
 

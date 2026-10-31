@@ -11,22 +11,29 @@ Item {
 
     property var dropdown
 
-    // Every node we read `audio` / `properties` from must be bound.
     readonly property var allNodes: Pipewire.nodes.values
 
-    function mediaClass(n) {
-        return n.properties["media.class"] ?? "";
+    // Only the nodes listed below are bound, and only they are read: binding a node fetches its
+    // properties and params and binds its device (whose routes and props cost more still).
+    // The class comes from the node's type, which is known before the node is bound; reading
+    // `properties` for it would re-run the filters whenever any node's properties change.
+    readonly property var audioNodes: {
+        const nodes = [];
+        for (const n of root.allNodes) {
+            if (n.type === PwNodeType.AudioSink || n.type === PwNodeType.AudioSource || n.type === PwNodeType.AudioOutStream)
+                nodes.push(n);
+        }
+        return nodes;
     }
-
-    readonly property var sinks: allNodes.filter(n => n.audio && n.isSink && !n.isStream && mediaClass(n).startsWith("Audio/Sink"))
-    readonly property var sources: allNodes.filter(n => n.audio && !n.isSink && !n.isStream && mediaClass(n).startsWith("Audio/Source") && !n.name.endsWith(".monitor"))
-    readonly property var streams: allNodes.filter(n => n.audio && n.isStream && mediaClass(n) === "Stream/Output/Audio")
+    readonly property var sinks: audioNodes.filter(n => n.type === PwNodeType.AudioSink)
+    readonly property var sources: audioNodes.filter(n => n.type === PwNodeType.AudioSource && !n.name.endsWith(".monitor"))
+    readonly property var streams: audioNodes.filter(n => n.type === PwNodeType.AudioOutStream)
 
     implicitWidth: 380
     implicitHeight: col.implicitHeight
 
     PwObjectTracker {
-        objects: root.allNodes
+        objects: root.audioNodes
     }
 
     ScriptModel {
@@ -107,7 +114,11 @@ Item {
             running: monitor.enabled
             onTriggered: {
                 const p = monitor.peak;
-                ch.level = p > 0.001 ? Math.max(0, Math.min(1, 1 + 20 * Math.log(p) / Math.LN10 / 60)) : 0;
+                const next = p > 0.001 ? Math.max(0, Math.min(1, 1 + 20 * Math.log(p) / Math.LN10 / 60)) : 0;
+                // The meter is levelMeter.width pixels wide: a change within the same pixel is invisible.
+                if (levelMeter.width > 0 && Math.round(next * levelMeter.width) === Math.round(ch.level * levelMeter.width))
+                    return;
+                ch.level = next;
             }
         }
 
@@ -163,6 +174,8 @@ Item {
             }
 
             Meter {
+                id: levelMeter
+
                 Layout.fillWidth: true
                 Layout.preferredHeight: 4
                 implicitHeight: 4
